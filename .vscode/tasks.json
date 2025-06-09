@@ -1,0 +1,20 @@
+// .vscode/tasks.json
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "npm: compile", // Este é o nome da sua tarefa
+            "type": "npm",
+            "script": "compile", // Isso se refere ao script "compile" em seu package.json
+            "group": {
+                "kind": "build",
+                "isDefault": true // ISSO É CRUCIAL! Diz ao VS Code que esta é a tarefa de build padrão.
+            },
+            "problemMatcher": "$tsc", // Ajuda o VS Code a reportar erros do TypeScript
+            "isBackground": false, // Mantenha false se o "compile" apenas compila uma vez
+            "presentation": {
+                "reveal": "always" // Mostra o terminal da tarefa sempre que ela é executada
+            }
+        }
+    ]
+}
