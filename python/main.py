@@ -40,15 +40,26 @@ def analyze_react_project(project_path):
     return project_info
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        project_path = sys.argv[1]
-        # Detectar tipo de projeto
-        if os.path.exists(os.path.join(project_path, 'package.json')):
-            analysis_results = analyze_react_project(project_path)
-        else:
-            analysis_results = {"error": "Tipo de projeto não suportado ou detectado."}
+    try:
+        if len(sys.argv) > 1:
+            project_path = sys.argv[1]
+            if not os.path.isdir(project_path):
+                raise FileNotFoundError(f"O caminho fornecido não é um diretório válido: {project_path}")
 
-        # Imprimir o resultado em JSON para a extensão TypeScript
-        print(json.dumps(analysis_results, indent=2))
-    else:
-        print(json.dumps({"error": "Nenhum caminho de projeto fornecido."}), file=sys.stderr)
+            if os.path.exists(os.path.join(project_path, 'package.json')):
+                analysis_results = analyze_react_project(project_path)
+            else:
+                analysis_results = {"error": "Tipo de projeto não suportado. Nenhum package.json encontrado."}
+            
+            print(json.dumps(analysis_results, indent=2))
+        else:
+            raise ValueError("Nenhum caminho de projeto foi fornecido como argumento.")
+
+    except Exception as e:
+        error_report = {
+            "error": "Ocorreu um erro inesperado no script Python.",
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+        }
+        print(json.dumps(error_report), file=sys.stderr)
+        sys.exit(1)
