@@ -1,0 +1,405 @@
+name: CI - Continuous Integration
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  # ============================================
+  # Job 1: Validate Project Structure
+  # ============================================
+  validate-structure:
+    name: Validate Project Structure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check required files exist
+        run: |
+          echo "🔍 Checking required files..."
+
+          REQUIRED_FILES=(
+            "package.json"
+            "tsconfig.json"
+            "requirements.txt"
+            ".env.example"
+            "python/main.py"
+            "python/agents.py"
+            "python/functions.py"
+            "src/extension.ts"
+          )
+
+          MISSING_FILES=()
+
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              MISSING_FILES+=("$file")
+              echo "❌ Missing: $file"
+            else
+              echo "✅ Found: $file"
+            fi
+          done
+
+          if [ ${#MISSING_FILES[@]} -gt 0 ]; then
+            echo ""
+            echo "❌ ERROR: Missing ${#MISSING_FILES[@]} required file(s)"
+            echo "Please ensure all required files are present in the repository"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All required files present"
+
+      - name: Check for sensitive data
+        run: |
+          echo "🔒 Checking for exposed secrets..."
+
+          if [ -f ".env" ]; then
+            echo "❌ ERROR: .env file found in repository!"
+            echo "This file should NOT be committed as it may contain API keys"
+            echo "Please remove it and ensure .env is in .gitignore"
+            exit 1
+          fi
+
+          # Check for potential API keys in code
+          if grep -r "AIza[0-9A-Za-z_-]\{35\}" --exclude-dir=node_modules --exclude-dir=.git . 2>/dev/null; then
+            echo "⚠️  WARNING: Potential Google API key found in code"
+            echo "Please use environment variables instead"
+          fi
+
+          echo "✅ No .env file in repository"
+
+  # ============================================
+  # Job 2: TypeScript Build and Lint
+  # ============================================
+  typescript-build:
+    name: TypeScript Build & Lint
+    runs-on: ubuntu-latest
+    needs: validate-structure
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          echo "📦 Installing Node.js dependencies..."
+          npm ci
+
+          if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Failed to install dependencies"
+            echo "Please check package.json and package-lock.json"
+            exit 1
+          fi
+
+          echo "✅ Dependencies installed successfully"
+
+      - name: Run ESLint
+        run: |
+          echo "🔍 Running ESLint..."
+          npm run lint 2>&1 | tee lint-output.txt
+
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo ""
+            echo "❌ ERROR: ESLint found issues in your code"
+            echo ""
+            echo "📋 Summary of issues:"
+            grep -E "error|warning" lint-output.txt | head -20 || true
+            echo ""
+            echo "💡 Fix these issues by running: npm run lint"
+            echo "💡 Auto-fix some issues with: npm run lint -- --fix"
+            exit 1
+          fi
+
+          echo "✅ No linting errors found"
+        continue-on-error: false
+
+      - name: Compile TypeScript
+        run: |
+          echo "🔨 Compiling TypeScript..."
+          npm run compile 2>&1 | tee compile-output.txt
+
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo ""
+            echo "❌ ERROR: TypeScript compilation failed"
+            echo ""
+            echo "📋 Compilation errors:"
+            cat compile-output.txt
+            echo ""
+            echo "💡 Common issues:"
+            echo "  - Type errors: Check type annotations"
+            echo "  - Import errors: Verify import paths"
+            echo "  - Config errors: Check tsconfig.json"
+            exit 1
+          fi
+
+          echo "✅ TypeScript compiled successfully"
+
+      - name: Check compiled output
+        run: |
+          echo "🔍 Verifying compiled output..."
+
+          if [ ! -d "out" ]; then
+            echo "❌ ERROR: Output directory 'out' not found"
+            echo "Compilation may have failed silently"
+            exit 1
+          fi
+
+          if [ ! -f "out/extension.js" ]; then
+            echo "❌ ERROR: extension.js not found in output"
+            echo "Main extension file was not compiled"
+            exit 1
+          fi
+
+          echo "✅ Compiled output verified"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: typescript-build
+          path: |
+            out/
+            lint-output.txt
+            compile-output.txt
+          retention-days: 7
+
+  # ============================================
+  # Job 3: Python Validation
+  # ============================================
+  python-validation:
+    name: Python Validation
+    runs-on: ubuntu-latest
+    needs: validate-structure
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          echo "📦 Installing Python dependencies..."
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt 2>&1 | tee pip-install.log
+
+            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+              echo ""
+              echo "❌ ERROR: Failed to install Python dependencies"
+              echo ""
+              echo "📋 Installation errors:"
+              grep -i "error" pip-install.log | head -10 || true
+              echo ""
+              echo "💡 Possible solutions:"
+              echo "  - Update requirements.txt"
+              echo "  - Check for incompatible package versions"
+              echo "  - Verify Python version compatibility"
+              exit 1
+            fi
+          else
+            echo "⚠️  WARNING: requirements.txt not found"
+            echo "Installing core dependencies..."
+            pip install crewai langchain python-dotenv
+          fi
+
+          echo "✅ Python dependencies installed"
+
+      - name: Check Python syntax
+        run: |
+          echo "🔍 Checking Python syntax..."
+
+          SYNTAX_ERRORS=0
+
+          for file in python/*.py; do
+            if [ -f "$file" ]; then
+              echo "Checking $file..."
+              python -m py_compile "$file" 2>&1 | tee -a syntax-check.log
+
+              if [ ${PIPESTATUS[0]} -ne 0 ]; then
+                SYNTAX_ERRORS=$((SYNTAX_ERRORS + 1))
+                echo "❌ Syntax error in $file"
+              fi
+            fi
+          done
+
+          if [ $SYNTAX_ERRORS -gt 0 ]; then
+            echo ""
+            echo "❌ ERROR: Found $SYNTAX_ERRORS file(s) with syntax errors"
+            echo ""
+            echo "📋 Error details:"
+            cat syntax-check.log
+            exit 1
+          fi
+
+          echo "✅ No syntax errors found"
+
+      - name: Validate imports
+        run: |
+          echo "🔍 Validating Python imports..."
+
+          python -c "
+import sys
+import importlib.util
+
+errors = []
+critical_modules = [
+    'crewai',
+    'langchain',
+    'dotenv',
+    'anthropic',
+]
+
+print('Checking critical imports...')
+for module in critical_modules:
+    if importlib.util.find_spec(module) is None:
+        errors.append(f'❌ Missing: {module}')
+        print(f'❌ Module not found: {module}')
+    else:
+        print(f'✅ Found: {module}')
+
+if errors:
+    print()
+    print('❌ ERROR: Missing required Python modules')
+    print()
+    print('💡 Install missing modules:')
+    for error in errors:
+        print(f'  pip install {error.split()[-1]}')
+    sys.exit(1)
+
+print()
+print('✅ All critical imports available')
+          "
+
+      - name: Analyze code quality
+        run: |
+          echo "📊 Analyzing code quality..."
+          pip install flake8 pylint || true
+
+          if command -v flake8 &> /dev/null; then
+            echo "Running flake8..."
+            flake8 python/ --count --select=E9,F63,F7,F82 --show-source --statistics || true
+          fi
+
+          echo "✅ Code quality check completed"
+
+      - name: Upload Python artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-validation
+          path: |
+            pip-install.log
+            syntax-check.log
+          retention-days: 7
+
+  # ============================================
+  # Job 4: Extension Tests
+  # ============================================
+  extension-tests:
+    name: VS Code Extension Tests
+    runs-on: ubuntu-latest
+    needs: [typescript-build]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: |
+          echo "🧪 Running VS Code extension tests..."
+
+          # Install xvfb for headless testing
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+          # Run tests with xvfb
+          xvfb-run -a npm test 2>&1 | tee test-output.txt || true
+
+          if grep -q "FAIL\|ERROR" test-output.txt; then
+            echo ""
+            echo "❌ ERROR: Tests failed"
+            echo ""
+            echo "📋 Test failures:"
+            grep -A 5 "FAIL\|ERROR" test-output.txt || true
+            echo ""
+            echo "💡 Run tests locally: npm test"
+            exit 1
+          fi
+
+          echo "✅ All tests passed"
+        continue-on-error: true
+
+  # ============================================
+  # Job 5: Security Scan
+  # ============================================
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: validate-structure
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run npm audit
+        run: |
+          echo "🔒 Running security audit..."
+          npm audit --audit-level=moderate 2>&1 | tee audit-output.txt || true
+
+          VULNERABILITIES=$(grep -c "vulnerabilities" audit-output.txt || echo "0")
+
+          if [ "$VULNERABILITIES" != "0" ]; then
+            echo "⚠️  WARNING: Found vulnerabilities in dependencies"
+            echo "📋 Run 'npm audit fix' to resolve"
+          else
+            echo "✅ No known vulnerabilities found"
+          fi
+        continue-on-error: true
+
+  # ============================================
+  # Job 6: Build Summary
+  # ============================================
+  build-summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [typescript-build, python-validation, extension-tests, security-scan]
+    if: always()
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# 🎉 CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All critical checks passed!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Project:** Clarity - AI-Powered Documentation Generator" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY

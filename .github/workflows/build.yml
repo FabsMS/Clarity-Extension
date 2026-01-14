@@ -1,0 +1,232 @@
+name: Build & Package
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 0.0.1)'
+        required: true
+        default: '0.0.1'
+
+jobs:
+  # ============================================
+  # Package VS Code Extension
+  # ============================================
+  package-extension:
+    name: Package VS Code Extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          echo "📦 Installing dependencies..."
+          npm ci
+
+          if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Failed to install dependencies"
+            echo "Check package.json and package-lock.json for issues"
+            exit 1
+          fi
+
+          echo "✅ Dependencies installed"
+
+      - name: Install vsce (VS Code Extension Manager)
+        run: |
+          echo "📦 Installing vsce..."
+          npm install -g @vscode/vsce
+
+          if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Failed to install vsce"
+            exit 1
+          fi
+
+          echo "✅ vsce installed"
+
+      - name: Compile TypeScript
+        run: |
+          echo "🔨 Compiling extension..."
+          npm run compile
+
+          if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Compilation failed"
+            echo "Run 'npm run compile' locally to debug"
+            exit 1
+          fi
+
+          echo "✅ Compilation successful"
+
+      - name: Validate extension manifest
+        run: |
+          echo "🔍 Validating package.json..."
+
+          REQUIRED_FIELDS=(
+            "name"
+            "displayName"
+            "description"
+            "version"
+            "engines"
+            "publisher"
+            "main"
+          )
+
+          ERROR_COUNT=0
+
+          for field in "${REQUIRED_FIELDS[@]}"; do
+            VALUE=$(jq -r ".$field" package.json)
+
+            if [ "$VALUE" == "null" ] || [ -z "$VALUE" ]; then
+              echo "❌ Missing required field: $field"
+              ERROR_COUNT=$((ERROR_COUNT + 1))
+            else
+              echo "✅ Found: $field = $VALUE"
+            fi
+          done
+
+          if [ $ERROR_COUNT -gt 0 ]; then
+            echo ""
+            echo "❌ ERROR: package.json is missing $ERROR_COUNT required field(s)"
+            echo "Please update package.json with all required fields"
+            exit 1
+          fi
+
+          echo "✅ Extension manifest validated"
+
+      - name: Package extension
+        run: |
+          echo "📦 Packaging extension..."
+
+          vsce package --no-git-tag-version --no-update-package-json 2>&1 | tee package-output.txt
+
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo ""
+            echo "❌ ERROR: Failed to package extension"
+            echo ""
+            echo "📋 Error details:"
+            cat package-output.txt
+            echo ""
+            echo "💡 Common issues:"
+            echo "  - Missing 'publisher' field in package.json"
+            echo "  - Invalid version format"
+            echo "  - Missing icon or README"
+            echo "  - Check .vscodeignore for excluded files"
+            exit 1
+          fi
+
+          VSIX_FILE=$(ls *.vsix 2>/dev/null | head -1)
+
+          if [ -z "$VSIX_FILE" ]; then
+            echo "❌ ERROR: .vsix file not found after packaging"
+            exit 1
+          fi
+
+          echo "✅ Extension packaged successfully: $VSIX_FILE"
+
+          # Get package size
+          SIZE=$(du -h "$VSIX_FILE" | cut -f1)
+          echo "📦 Package size: $SIZE"
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clarity-extension
+          path: '*.vsix'
+          retention-days: 30
+
+      - name: Create Release (if tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: '*.vsix'
+          draft: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================
+  # Validate Python Environment
+  # ============================================
+  validate-python-env:
+    name: Validate Python Environment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test environment creation
+        run: |
+          echo "🐍 Testing Python environment creation..."
+
+          python -m venv test-venv
+
+          if [ ! -d "test-venv" ]; then
+            echo "❌ ERROR: Failed to create virtual environment"
+            exit 1
+          fi
+
+          source test-venv/bin/activate
+
+          pip install --upgrade pip
+
+          if [ -f requirements-core.txt ]; then
+            echo "Installing core dependencies..."
+            pip install -r requirements-core.txt 2>&1 | tee install-log.txt
+
+            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+              echo ""
+              echo "❌ ERROR: Failed to install dependencies"
+              echo ""
+              echo "📋 Installation errors:"
+              grep -i "error" install-log.txt | head -10
+              exit 1
+            fi
+          fi
+
+          echo "✅ Python environment validated"
+
+          # Test imports
+          python -c "
+import crewai
+import langchain
+print('✅ Critical imports successful')
+          "
+
+  # ============================================
+  # Build Summary
+  # ============================================
+  build-summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [package-extension, validate-python-env]
+    if: always()
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# 📦 Build Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Extension packaged successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Ref:** ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "**SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📥 Download Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "Check the 'Artifacts' section above to download the packaged extension" >> $GITHUB_STEP_SUMMARY

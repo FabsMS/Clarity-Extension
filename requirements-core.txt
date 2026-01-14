@@ -1,0 +1,35 @@
+# ============================================
+# CLARITY - Core Python Dependencies
+# ============================================
+# Install with: pip install -r requirements-core.txt
+# For exact versions: pip install -r requirements.txt
+
+# AI and LLM Frameworks
+crewai==0.159.0
+crewai-tools==0.62.0
+langchain==0.3.27
+langchain-google-genai==2.1.9
+langchain-openai==0.2.14
+langchain-cohere==0.3.5
+langchain-community==0.3.27
+
+# LLM Providers
+openai==1.99.9
+anthropic==0.64.0
+google-ai-generativelanguage==0.6.18
+groq>=0.5.0
+
+# Vector Database
+chromadb==0.5.23
+
+# Web and Parsing
+beautifulsoup4==4.13.4
+aiohttp==3.12.15
+
+# Utilities
+python-dotenv==1.0.1
+coloredlogs==15.0.1
+click==8.2.1
+
+# Add Groq support (recommended)
+# groq==0.5.0

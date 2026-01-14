@@ -8,7 +8,8 @@ from abc import ABC, abstractmethod
 from crewai import Agent, Task, Crew, Process
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, ClassVar, Set
+from collections import Counter
 
 # Estruturas de dados genéricas
 
@@ -438,88 +439,175 @@ class JavaAnalyzer(LanguageAnalyzer):
             return "Classe de domínio"
 
 # Ferramenta principal
-import json
-from pathlib import Path
-from crewai_tools import BaseTool
+# Nota: BaseTool já está importado no topo do arquivo (linha 9)
+
 
 class MultiLanguageCodeAnalyzer(BaseTool):
     name: str = "multi_language_code_analyzer"
     description: str = "Analisa código em múltiplos arquivos e gera um resumo básico do projeto"
 
+    # extensões que vamos considerar e pastas a ignorar
+    SUPPORTED_EXTS: ClassVar[Set[str]] = {
+        ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".json", ".md"
+    }
+    IGNORE_DIRS: ClassVar[Set[str]] = {
+        ".git", ".hg", ".svn", "__pycache__", ".venv", "env", "venv",
+        "node_modules", "dist", "build", "out", ".idea", ".vscode"
+    }
+
+    # -------- utilitários internos --------
+    def _collect_files(self, root: Path) -> list[str]:
+        files: list[str] = []
+        for p in root.rglob("*"):
+            if not p.is_file():
+                continue
+            # pula pastas ignoradas
+            if any(part in self.IGNORE_DIRS for part in p.parts):
+                continue
+            if p.suffix.lower() in self.SUPPORTED_EXTS:
+                files.append(str(p))
+        return files
+
+    # -------- API esperada pelo seu agents.py --------
+    def analyze_project(self, project_path: str) -> dict:
+        """Analisa recursivamente um diretório (ou um arquivo único)."""
+        root = Path(project_path.strip().strip('"'))
+        if not root.exists():
+            return {"erro": f"Diretório/arquivo não encontrado: {project_path}"}
+
+        if root.is_dir():
+            file_paths = self._collect_files(root)
+        else:
+            file_paths = [str(root)]
+
+        return self._run(file_paths)
+
+    # -------- API chamada pelo CrewAI quando a Tool é executada --------
     def run(self, input: str) -> str:
         """
-        Método chamado pelo CrewAI. Recebe uma string com os paths, processa e retorna JSON como string.
+        Pode receber:
+          1) um diretório -> analisa o projeto inteiro;
+          2) uma lista de caminhos (um por linha).
+        Retorna JSON (string).
         """
         try:
-            file_paths = [
-                line.strip('- `').strip()
-                for line in input.strip().splitlines()
-                if line.strip()
-            ]
-            resultado = self._run(file_paths)
+            candidate = input.strip().strip('"')
+            if candidate and os.path.isdir(candidate):
+                resultado = self.analyze_project(candidate)
+            else:
+                # lista de paths (um por linha; tolera bullets e crases)
+                file_paths = []
+                for line in input.splitlines():
+                    s = line.strip().strip("`").lstrip("- ").strip().strip('"')
+                    if s:
+                        file_paths.append(s)
+                resultado = self._run(file_paths)
             return json.dumps(resultado, indent=2, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({
-                "erro": "Erro ao analisar arquivos",
-                "mensagem": str(e)
-            }, indent=2, ensure_ascii=False)
+            return json.dumps(
+                {"erro": "Erro ao analisar arquivos", "mensagem": str(e)},
+                indent=2, ensure_ascii=False
+            )
 
-    def _run(self, file_paths: list) -> dict:
-        analises_individuais = []
-        linguagens_detectadas = set()
+    # -------- núcleo da análise simples --------
+    def _run(self, file_paths: list[str]) -> dict:
+        analises_individuais: list[dict] = []
+        linguagens_detectadas: set[str] = set()
         total_linhas = 0
 
         for file_path in file_paths:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
+                ext = Path(file_path).suffix.lower()
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     conteudo = f.read()
+                # contar linhas de forma robusta
+                linhas = conteudo.count("\n") + (1 if conteudo and not conteudo.endswith("\n") else 0)
 
-                ext = Path(file_path).suffix.lstrip('.').lower()
-                linhas = len(conteudo.splitlines())
-
-                linguagens_detectadas.add(ext)
+                linguagens_detectadas.add(ext.lstrip(".") or "desconhecida")
                 total_linhas += linhas
 
                 analises_individuais.append({
                     "arquivo": file_path,
-                    "linguagem": ext,
+                    "linguagem": ext.lstrip("."),
                     "linhas": linhas
                 })
-
             except Exception as e:
                 analises_individuais.append({
                     "arquivo": file_path,
                     "erro": str(e)
                 })
 
-        resumo = {
-            "linguagens": list(sorted(linguagens_detectadas)) or ["desconhecida"],
+        linguagens_list = sorted(linguagens_detectadas) or ["desconhecida"]
+        return {
+            "linguagens": linguagens_list,
             "quantidade_arquivos": len(file_paths),
             "total_linhas": total_linhas,
             "detalhes": analises_individuais,
-            "resumo": f"Foram analisados {len(file_paths)} arquivos com {total_linhas} linhas no total. Linguagens detectadas: {', '.join(sorted(linguagens_detectadas)) or 'nenhuma detectada'}."
+            "resumo": (
+                f"Foram analisados {len(file_paths)} arquivos com {total_linhas} linhas no total. "
+                f"Linguagens detectadas: {', '.join(linguagens_list) if linguagens_list else 'nenhuma detectada'}."
+            ),
         }
-
-        return resumo
-
-    def run(self, input: str) -> str:
+    
+        # -------- resumo textual para o agente --------
+    def summarize_analysis(self, analysis, max_files: int = 10) -> str:
         """
-        Método chamado pelo CrewAI. Recebe uma string com os paths, processa e retorna JSON como string.
+        Recebe o resultado de analyze_project/_run (dict ou JSON string)
+        e retorna um resumo textual enxuto para o próximo agente.
         """
-        try:
-            file_paths = [
-                line.strip('- `').strip()
-                for line in input.strip().splitlines()
-                if line.strip()
-            ]
-            resultado = self._run(file_paths)
-            return json.dumps(resultado, indent=2, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({
-                "erro": "Erro ao analisar arquivos",
-                "mensagem": str(e)
-            }, indent=2, ensure_ascii=False)
+        # aceita dict ou string JSON
+        if isinstance(analysis, str):
+            try:
+                data = json.loads(analysis)
+            except Exception:
+                return analysis  # se não for JSON válido, devolve cru
+        else:
+            data = analysis or {}
 
+        detalhes = data.get("detalhes") or []
+        qnt = data.get("quantidade_arquivos", 0)
+        total = data.get("total_linhas", 0)
+        linguagens = data.get("linguagens") or []
+
+        # contagem por linguagem
+        lang_counts = Counter(
+            (d.get("linguagem") or "").strip()
+            for d in detalhes
+            if isinstance(d, dict)
+        )
+        lang_counts.pop("", None)
+
+        # top arquivos por nº de linhas
+        maiores = sorted(
+            [d for d in detalhes if isinstance(d, dict) and "linhas" in d],
+            key=lambda x: x["linhas"],
+            reverse=True
+        )[:max_files]
+
+        linhas_top = "\n".join(
+            f"- {Path(d['arquivo']).name} — {d['linhas']} linhas"
+            for d in maiores
+        ) or "- N/A"
+
+        dist_linguagens = (
+            ", ".join(f"{lang} ({qty})" for lang, qty in lang_counts.most_common())
+            if lang_counts else "N/A"
+        )
+
+        resumo_base = data.get("resumo") or ""
+        if resumo_base:
+            resumo_base = f"{resumo_base}\n\n"
+
+        return (
+            f"{resumo_base}"
+            f"Arquivos analisados: {qnt}\n"
+            f"Total de linhas: {total}\n"
+            f"Linguagens detectadas: {', '.join(linguagens) if linguagens else 'desconhecida'}\n"
+            f"Distribuição por linguagem: {dist_linguagens}\n\n"
+            f"Arquivos com mais linhas:\n{linhas_top}\n"
+        )
+
+    # (mantive seus helpers caso use depois)
     def _get_analyzer_for_extension(self, ext: str, analyzers: list):
         for analyzer in analyzers:
             if ext in analyzer.extensions:
@@ -540,6 +628,8 @@ class MultiLanguageCodeAnalyzer(BaseTool):
             "methods": [self._function_to_dict(m) for m in getattr(c, "methods", [])],
             "docstring": getattr(c, "docstring", "")
         }
+    
+    
 
     def _resumir_proposito(self, analises):
         descricoes = []
@@ -552,7 +642,6 @@ class MultiLanguageCodeAnalyzer(BaseTool):
 
     def _gerar_resumo_global(self, classes, funcoes, dependencias):
         return f"O projeto possui {len(classes)} classes, {len(funcoes)} funções e depende de {len(dependencias)} bibliotecas externas."
-
 
 class ReadmeGeneratorTool(BaseTool):
     name: str = "readme_generator"
