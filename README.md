@@ -18,10 +18,74 @@
 - 🔍 **Multi-linguagem**: Suporta Python, JavaScript, TypeScript, JSX, TSX e Java
 - ⚡ **Rápido e fácil**: Um comando gera toda a documentação
 - 🎯 **Inteligente**: Detecta automaticamente tipo de projeto (React, Flask, Spring, etc.)
-- 🔧 **Configurável**: Suporte para múltiplos provedores de IA (Gemini, Groq, OpenAI, etc.)
+- 🔧 **100% Offline**: Funciona localmente com Ollama, sem necessidade de APIs externas
 - 📦 **Integrado**: Funciona direto no VS Code
-- 🆓 **Gratuito**: Usa APIs gratuitas de IA por padrão
+- 🆓 **Gratuito**: Totalmente gratuito e privado, seus dados não saem da sua máquina
 
+## 🏗️ Arquitetura Multi-Modelo
+
+O Clarity utiliza uma arquitetura avançada com **dois modelos especializados**:
+
+### 1. **Analyst LLM** - `deepseek-coder:6.7b`
+- 🎯 **Responsabilidade**: Análise técnica precisa do código
+- 🌡️ **Temperatura**: 0.1 (preciso e determinístico)
+- 💡 **Especialização**: Identificação de padrões arquiteturais, estrutura do código e detalhes técnicos
+- ⚙️ **Função**: Gerar análise estruturada do projeto
+
+### 2. **Writer LLM** - `llama3:8b`
+- 📝 **Responsabilidade**: Geração do README final
+- 🌡️ **Temperatura**: 0.4 (criativo e fluido)
+- 💡 **Especialização**: Linguagem natural, documentação clara e envolvente
+- ⚙️ **Função**: Transformar análise técnica em documentação profissional
+
+**Benefícios da arquitetura multi-modelo:**
+- ✅ Análise técnica mais precisa com modelo especializado em código
+- ✅ Documentação mais clara e legível com modelo especializado em escrita
+- ✅ Separação de responsabilidades para melhor qualidade final
+- ✅ Funcionamento 100% offline sem dependências externas
+
+## 🔄 Fluxo de Processamento Otimizado
+
+O Clarity implementa um **fluxo inteligente com chunking** para lidar com projetos de qualquer tamanho:
+
+```
+📦 PROJETO
+    ↓
+[FASE 1] Coleta e Chunking
+    ├─ Divide arquivos em blocos (chunks)
+    ├─ Máx: 15 arquivos por chunk
+    └─ Máx: 5000 linhas por chunk
+    ↓
+[FASE 2] Análise com Analyst LLM (deepseek-coder:6.7b)
+    ├─ Processa cada chunk separadamente
+    ├─ Gera análise intermediária estruturada
+    └─ Temperatura: 0.1 (análise precisa)
+    ↓
+[FASE 3] Consolidação
+    ├─ Mescla análises de todos os chunks
+    ├─ Deduplica informações
+    └─ Otimiza dados para contexto
+    ↓
+[FASE 4] Relatório Técnico Estruturado
+    ├─ Cria relatório JSON otimizado
+    ├─ Limita tamanho para evitar estouro de contexto
+    └─ Foca em informações mais relevantes
+    ↓
+[FASE 5] Geração de README com Writer LLM (llama3:8b)
+    ├─ Recebe relatório técnico consolidado
+    ├─ Gera documentação profissional
+    └─ Temperatura: 0.4 (escrita criativa)
+    ↓
+📄 README-CLARITY.md
+```
+
+### Vantagens do Fluxo Otimizado:
+
+🚀 **Escalabilidade**: Processa projetos de qualquer tamanho sem estouro de memória
+🎯 **Precisão**: Cada chunk recebe atenção focada do Analyst LLM
+🧩 **Consolidação Inteligente**: Mescla informações preservando o essencial
+⚡ **Performance**: Processamento eficiente mesmo em projetos grandes
+🛡️ **Controle de Contexto**: Previne erros por limite de tokens excedido
 
 ## 📊 Status do Projeto
 

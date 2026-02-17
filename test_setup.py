@@ -68,10 +68,9 @@ def test_imports():
         ('crewai', 'CrewAI'),
         ('langchain', 'LangChain'),
         ('dotenv', 'python-dotenv'),
-        ('anthropic', 'Anthropic'),
         ('bs4', 'BeautifulSoup4'),
         ('chromadb', 'ChromaDB'),
-        ('groq', 'Groq'),
+        ('ollama', 'Ollama'),
     ]
 
     all_ok = True
@@ -95,7 +94,7 @@ def test_env_file():
 
     if not env_path.exists():
         print_error("Arquivo .env não encontrado")
-        print_warning("Execute: cp .env.example .env")
+        print_warning("Crie o arquivo .env na raiz do projeto")
         return False
 
     print_success("Arquivo .env existe")
@@ -104,58 +103,59 @@ def test_env_file():
     from dotenv import load_dotenv
     load_dotenv()
 
-    # Check API keys
-    groq_key = os.getenv('GROQ_API_KEY')
-    gemini_key = os.getenv('GEMINI_API_KEY')
-    openai_key = os.getenv('OPENAI_API_KEY')
+    # Check Ollama configuration
+    ollama_url = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+    ollama_model = os.getenv('OLLAMA_MODEL', 'deepseek-coder:6.7b')
 
-    has_key = False
-
-    if groq_key and groq_key != 'your_groq_api_key_here':
-        print_success(f"GROQ_API_KEY configurada")
-        has_key = True
-    else:
-        print_warning("GROQ_API_KEY não configurada")
-
-    if gemini_key and gemini_key != 'your_gemini_api_key_here':
-        print_success(f"GEMINI_API_KEY configurada")
-        has_key = True
-    else:
-        print_warning("GEMINI_API_KEY não configurada")
-
-    if openai_key and openai_key != 'your_openai_api_key_here':
-        print_success(f"OPENAI_API_KEY configurada")
-        has_key = True
-
-    if not has_key:
-        print_error("Nenhuma API key válida encontrada")
-        print_warning("Configure pelo menos uma chave de API no .env")
-        return False
+    print_success(f"OLLAMA_BASE_URL: {ollama_url}")
+    print_success(f"OLLAMA_MODEL: {ollama_model}")
 
     return True
 
 
 def test_llm_config():
-    """Test LLM configuration"""
-    print_info("Testando configuração de LLM...")
+    """Test Ollama configuration"""
+    print_info("Testando configuração do Ollama...")
 
     from dotenv import load_dotenv
     load_dotenv()
 
-    provider = os.getenv('LLM_PROVIDER', 'groq')
-    model = os.getenv('LLM_MODEL', '')
+    ollama_url = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+    model = os.getenv('OLLAMA_MODEL', 'deepseek-coder:6.7b')
     temperature = os.getenv('LLM_TEMPERATURE', '0.1')
 
-    print_success(f"Provedor: {provider}")
-
-    if model:
-        print_success(f"Modelo: {model}")
-    else:
-        print_info("Modelo: (padrão)")
-
+    print_success(f"Ollama URL: {ollama_url}")
+    print_success(f"Modelo: {model}")
     print_success(f"Temperatura: {temperature}")
 
-    return True
+    # Test Ollama connection
+    try:
+        import requests
+        response = requests.get(f"{ollama_url}/api/tags", timeout=5)
+        if response.status_code == 200:
+            print_success("Ollama está rodando")
+
+            models_data = response.json()
+            available_models = [m['name'] for m in models_data.get('models', [])]
+
+            if 'deepseek-coder:6.7b' in available_models:
+                print_success("Modelo deepseek-coder:6.7b disponível")
+            else:
+                print_warning("Modelo deepseek-coder:6.7b não encontrado")
+
+            if 'llama3:8b' in available_models:
+                print_success("Modelo llama3:8b disponível")
+            else:
+                print_warning("Modelo llama3:8b não encontrado")
+
+            return True
+        else:
+            print_error(f"Ollama retornou status {response.status_code}")
+            return False
+    except Exception as e:
+        print_error(f"Não foi possível conectar ao Ollama: {str(e)}")
+        print_warning("Execute: ollama serve")
+        return False
 
 
 def test_project_structure():

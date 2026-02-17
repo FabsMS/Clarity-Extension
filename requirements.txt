@@ -3,7 +3,6 @@ aiohttp==3.12.15
 aiosignal==1.4.0
 alembic==1.16.4
 annotated-types==0.7.0
-anthropic==0.64.0
 anyio==4.10.0
 appdirs==1.4.4
 asgiref==3.9.1
@@ -46,13 +45,8 @@ filetype==1.2.0
 flatbuffers==25.2.10
 frozenlist==1.7.0
 fsspec==2025.7.0
-google-ai-generativelanguage==0.6.18
-google-api-core==2.25.1
-google-auth==2.40.3
-googleapis-common-protos==1.70.0
 gptcache==0.1.44
 greenlet==3.2.4
-groq==1.0.0
 grpcio==1.74.0
 grpcio-status==1.74.0
 h11==0.16.0
@@ -85,12 +79,8 @@ jsonschema-specifications==2025.4.1
 kubernetes==33.1.0
 lancedb==0.24.2
 langchain==0.3.27
-langchain-cohere==0.3.5
 langchain-community==0.3.27
 langchain-core==0.3.74
-langchain-experimental==0.3.4
-langchain-google-genai==2.1.9
-langchain-openai==0.2.14
 langchain-text-splitters==0.3.9
 langsmith==0.3.45
 litellm==1.74.9
@@ -110,8 +100,8 @@ networkx==3.5
 nodeenv==1.9.1
 numpy==2.3.2
 oauthlib==3.3.1
+ollama==0.6.1
 onnxruntime==1.22.0
-openai==1.99.9
 openpyxl==3.1.5
 opentelemetry-api==1.36.0
 opentelemetry-exporter-otlp-proto-common==1.36.0

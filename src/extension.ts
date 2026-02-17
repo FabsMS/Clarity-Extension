@@ -96,8 +96,8 @@ export function activate(context: vscode.ExtensionContext) {
 		if (!fileExists(envFile)) {
 			const choice = await vscode.window.showWarningMessage(
 				'⚠️ Arquivo .env não encontrado!\n\n' +
-				'O arquivo .env contém as chaves de API necessárias para o funcionamento da extensão.\n\n' +
-				'Você precisa criar um arquivo .env na raiz da extensão com suas chaves de API.',
+				'O arquivo .env contém as configurações do Ollama para funcionamento offline.\n\n' +
+				'Você precisa criar um arquivo .env na raiz da extensão com as configurações do Ollama.',
 				'Abrir Documentação',
 				'Criar .env agora',
 				'Continuar mesmo assim'
@@ -118,7 +118,7 @@ export function activate(context: vscode.ExtensionContext) {
 					const doc = await vscode.workspace.openTextDocument(envFile);
 					vscode.window.showTextDocument(doc);
 					vscode.window.showInformationMessage(
-						'✅ Arquivo .env criado! Por favor, adicione suas chaves de API e execute o comando novamente.'
+						'✅ Arquivo .env criado! Verifique as configurações do Ollama e execute o comando novamente.'
 					);
 				}
 				return;
@@ -261,13 +261,13 @@ export function activate(context: vscode.ExtensionContext) {
 								'Verifique se o ambiente virtual está ativo',
 								'Verifique se há conflitos de versão'
 							];
-						} else if (stderr.includes('API key') || stderr.includes('GEMINI_API_KEY') || stderr.includes('authentication')) {
-							errorMessage += 'Problema com a chave de API.\n';
+						} else if (stderr.includes('Ollama') || stderr.includes('ollama') || stderr.includes('connection')) {
+							errorMessage += 'Problema ao conectar com o Ollama.\n';
 							suggestions = [
-								'Verifique se o arquivo .env existe',
-								'Verifique se a chave de API está correta no .env',
-								'Obtenha uma nova chave em: https://aistudio.google.com/app/apikey',
-								'Ou use Groq (grátis): https://console.groq.com'
+								'Verifique se o Ollama está instalado: https://ollama.com/download',
+								'Inicie o Ollama: ollama serve',
+								'Instale os modelos: ollama pull deepseek-coder:6.7b',
+								'Instale os modelos: ollama pull llama3:8b'
 							];
 						} else if (stderr.includes('SyntaxError')) {
 							errorMessage += 'Erro de sintaxe no código Python.\n';

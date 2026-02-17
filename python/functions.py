@@ -452,7 +452,9 @@ class MultiLanguageCodeAnalyzer(BaseTool):
     }
     IGNORE_DIRS: ClassVar[Set[str]] = {
         ".git", ".hg", ".svn", "__pycache__", ".venv", "env", "venv",
-        "node_modules", "dist", "build", "out", ".idea", ".vscode"
+        "node_modules", "dist", "build", "out", ".idea", ".vscode",
+        # Next.js: pasta de build e cache do compilador SWC
+        ".next", ".swc",
     }
 
     # -------- utilitários internos --------
@@ -509,28 +511,233 @@ class MultiLanguageCodeAnalyzer(BaseTool):
                 indent=2, ensure_ascii=False
             )
 
-    # -------- núcleo da análise simples --------
+    # -------- núcleo da análise aprimorada --------
     def _run(self, file_paths: list[str]) -> dict:
+        """
+        Análise estática aprimorada que extrai:
+        - Dependências de package.json, requirements.txt, etc.
+        - Imports e frameworks detectados
+        - Estrutura de pastas
+        - Arquivos-chave do projeto
+        - Contagem de funções/classes
+        """
+        import re
+        from collections import defaultdict
+
         analises_individuais: list[dict] = []
         linguagens_detectadas: set[str] = set()
         total_linhas = 0
 
+        # Dados aprimorados
+        dependencias_npm = set()
+        dependencias_python = set()
+        frameworks_detectados = set()
+        estrutura_pastas = defaultdict(int)
+        imports_detectados = defaultdict(set)
+        arquivos_chave = []
+        total_funcoes = 0
+        total_classes = 0
+
+        # Metadados do projeto
+        projeto_nome = None
+        projeto_descricao = None
+        projeto_versao = None
+        projeto_scripts: dict = {}
+
+        # Primeiro passe: procurar por arquivos de configuração
+        project_root = None
+        if file_paths:
+            project_root = Path(file_paths[0]).parent
+            while project_root.parent != project_root:
+                if (project_root / 'package.json').exists() or (project_root / 'requirements.txt').exists():
+                    break
+                project_root = project_root.parent
+
+        # Analisar package.json se existir
+        if project_root and (project_root / 'package.json').exists():
+            try:
+                with open(project_root / 'package.json', 'r', encoding='utf-8') as f:
+                    package_data = json.load(f)
+
+                    # Extrair metadados do projeto
+                    projeto_nome = package_data.get('name', None)
+                    projeto_descricao = package_data.get('description', None)
+                    projeto_versao = package_data.get('version', None)
+                    projeto_scripts = package_data.get('scripts', {})
+
+                    deps = package_data.get('dependencies', {})
+                    dev_deps = package_data.get('devDependencies', {})
+                    dependencias_npm.update(deps.keys())
+                    dependencias_npm.update(dev_deps.keys())
+
+                    # Detectar frameworks do package.json
+                    if 'react' in deps or 'react' in dev_deps:
+                        frameworks_detectados.add('React')
+                    if 'vue' in deps or 'vue' in dev_deps:
+                        frameworks_detectados.add('Vue')
+                    if 'next' in deps or 'next' in dev_deps:
+                        frameworks_detectados.add('Next.js')
+                    if 'express' in deps:
+                        frameworks_detectados.add('Express')
+                    if 'vite' in dev_deps:
+                        frameworks_detectados.add('Vite')
+            except Exception:
+                pass
+
+        # Analisar requirements.txt se existir
+        if project_root and (project_root / 'requirements.txt').exists():
+            try:
+                with open(project_root / 'requirements.txt', 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            pkg = re.split('[=<>!]', line)[0].strip()
+                            if pkg:
+                                dependencias_python.add(pkg)
+
+                                # Detectar frameworks Python
+                                pkg_lower = pkg.lower()
+                                if 'django' in pkg_lower:
+                                    frameworks_detectados.add('Django')
+                                elif 'flask' in pkg_lower:
+                                    frameworks_detectados.add('Flask')
+                                elif 'fastapi' in pkg_lower:
+                                    frameworks_detectados.add('FastAPI')
+            except Exception:
+                pass
+
+        # Analisar pyproject.toml se existir (Python moderno)
+        if not projeto_nome and project_root and (project_root / 'pyproject.toml').exists():
+            try:
+                with open(project_root / 'pyproject.toml', 'r', encoding='utf-8') as f:
+                    conteudo_toml = f.read()
+                # Extrai name e description da seção [project] ou [tool.poetry]
+                m_name = re.search(r'^\s*name\s*=\s*["\']([^"\']+)["\']', conteudo_toml, re.MULTILINE)
+                m_desc = re.search(r'^\s*description\s*=\s*["\']([^"\']+)["\']', conteudo_toml, re.MULTILINE)
+                if m_name:
+                    projeto_nome = m_name.group(1)
+                if m_desc:
+                    projeto_descricao = m_desc.group(1)
+            except Exception:
+                pass
+
+        # Analisar setup.py se existir (Python clássico)
+        if not projeto_nome and project_root and (project_root / 'setup.py').exists():
+            try:
+                with open(project_root / 'setup.py', 'r', encoding='utf-8') as f:
+                    conteudo_setup = f.read()
+                m_name = re.search(r'name\s*=\s*["\']([^"\']+)["\']', conteudo_setup)
+                m_desc = re.search(r'description\s*=\s*["\']([^"\']+)["\']', conteudo_setup)
+                if m_name:
+                    projeto_nome = m_name.group(1)
+                if m_desc:
+                    projeto_descricao = m_desc.group(1)
+            except Exception:
+                pass
+
+        # Fallback: usa o nome do diretório raiz do projeto
+        if not projeto_nome and project_root:
+            projeto_nome = project_root.name
+
+        # Segundo passe: analisar cada arquivo
         for file_path in file_paths:
             try:
-                ext = Path(file_path).suffix.lower()
+                path_obj = Path(file_path)
+                ext = path_obj.suffix.lower()
+                filename = path_obj.name.lower()
+
+                # Estrutura de pastas
+                if len(path_obj.parts) > 1:
+                    folder = path_obj.parts[-2] if len(path_obj.parts) > 1 else 'root'
+                    estrutura_pastas[folder] += 1
+
+                # Identificar arquivos-chave
+                key_files = ['index', 'main', 'app', 'server', 'config', '__init__']
+                if any(filename.startswith(kf) for kf in key_files):
+                    arquivos_chave.append(str(path_obj))
+
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     conteudo = f.read()
-                # contar linhas de forma robusta
-                linhas = conteudo.count("\n") + (1 if conteudo and not conteudo.endswith("\n") else 0)
 
+                linhas = conteudo.count("\n") + (1 if conteudo and not conteudo.endswith("\n") else 0)
                 linguagens_detectadas.add(ext.lstrip(".") or "desconhecida")
                 total_linhas += linhas
+
+                # Análise de imports e código
+                funcoes = 0
+                classes = 0
+                imports = set()
+
+                if ext in ['.js', '.jsx', '.ts', '.tsx']:
+                    # JavaScript/TypeScript
+                    # Detectar imports
+                    import_patterns = [
+                        r"import\s+.*?\s+from\s+['\"]([^'\"]+)['\"]",
+                        r"require\(['\"]([^'\"]+)['\"]\)"
+                    ]
+                    for pattern in import_patterns:
+                        matches = re.findall(pattern, conteudo)
+                        imports.update(matches)
+
+                    # Detectar frameworks de imports
+                    for imp in imports:
+                        if imp == 'next' or imp.startswith('next/'):
+                            frameworks_detectados.add('Next.js')
+                        if 'react' in imp:
+                            frameworks_detectados.add('React')
+                        if 'vue' in imp:
+                            frameworks_detectados.add('Vue')
+                        if 'express' in imp:
+                            frameworks_detectados.add('Express')
+                        if 'firebase' in imp or '@firebase' in imp:
+                            frameworks_detectados.add('Firebase')
+
+                    # Contar funções e classes
+                    funcoes += len(re.findall(r'\bfunction\s+\w+', conteudo))
+                    funcoes += len(re.findall(r'\bconst\s+\w+\s*=\s*(?:\([^)]*\)|[^=])\s*=>', conteudo))
+                    funcoes += len(re.findall(r'\b\w+\s*:\s*(?:\([^)]*\)|[^,])\s*=>', conteudo))
+                    classes += len(re.findall(r'\bclass\s+\w+', conteudo))
+
+                elif ext == '.py':
+                    # Python
+                    # Detectar imports
+                    import_patterns = [
+                        r"^import\s+([\w.]+)",
+                        r"^from\s+([\w.]+)\s+import"
+                    ]
+                    for pattern in import_patterns:
+                        matches = re.findall(pattern, conteudo, re.MULTILINE)
+                        imports.update(matches)
+
+                    # Detectar frameworks de imports
+                    for imp in imports:
+                        if 'django' in imp:
+                            frameworks_detectados.add('Django')
+                        elif 'flask' in imp:
+                            frameworks_detectados.add('Flask')
+                        elif 'fastapi' in imp:
+                            frameworks_detectados.add('FastAPI')
+
+                    # Contar funções e classes
+                    funcoes += len(re.findall(r'^\s*def\s+\w+', conteudo, re.MULTILINE))
+                    classes += len(re.findall(r'^\s*class\s+\w+', conteudo, re.MULTILINE))
+
+                total_funcoes += funcoes
+                total_classes += classes
+
+                if imports:
+                    lang = ext.lstrip('.')
+                    imports_detectados[lang].update(imports)
 
                 analises_individuais.append({
                     "arquivo": file_path,
                     "linguagem": ext.lstrip("."),
-                    "linhas": linhas
+                    "linhas": linhas,
+                    "funcoes": funcoes,
+                    "classes": classes,
+                    "imports_count": len(imports)
                 })
+
             except Exception as e:
                 analises_individuais.append({
                     "arquivo": file_path,
@@ -538,15 +745,42 @@ class MultiLanguageCodeAnalyzer(BaseTool):
                 })
 
         linguagens_list = sorted(linguagens_detectadas) or ["desconhecida"]
+
+        # Consolidar dependências
+        todas_dependencias = list(dependencias_npm.union(dependencias_python))
+
+        # Criar resumo dinâmico
+        resumo_parts = []
+        if projeto_nome:
+            resumo_parts.append(f"Projeto: {projeto_nome}") 
+        if projeto_descricao:
+            resumo_parts.append(f"Descrição: {projeto_descricao}")
+        resumo_parts.append(f"{len(file_paths)} arquivos, {total_linhas} linhas")
+        resumo_parts.append(f"{total_funcoes} funções, {total_classes} classes")
+        resumo_parts.append(f"Linguagens: {', '.join(linguagens_list)}")
+        if frameworks_detectados:
+            resumo_parts.append(f"Frameworks: {', '.join(sorted(frameworks_detectados))}")
+
         return {
+            "projeto_nome": projeto_nome,
+            "projeto_descricao": projeto_descricao,
+            "projeto_versao": projeto_versao,
+            "projeto_scripts": projeto_scripts,
             "linguagens": linguagens_list,
             "quantidade_arquivos": len(file_paths),
             "total_linhas": total_linhas,
+            "total_funcoes": total_funcoes,
+            "total_classes": total_classes,
             "detalhes": analises_individuais,
-            "resumo": (
-                f"Foram analisados {len(file_paths)} arquivos com {total_linhas} linhas no total. "
-                f"Linguagens detectadas: {', '.join(linguagens_list) if linguagens_list else 'nenhuma detectada'}."
-            ),
+            "dependencias": sorted(todas_dependencias)[:30],  # Top 30 deps
+            "frameworks_detectados": sorted(list(frameworks_detectados)),
+            "estrutura_pastas": dict(estrutura_pastas),
+            "arquivos_chave": arquivos_chave[:10],  # Top 10
+            "imports_principais": {
+                lang: sorted(list(imps))[:15]  # Top 15 imports por linguagem
+                for lang, imps in imports_detectados.items()
+            },
+            "resumo": ". ".join(resumo_parts) + "."
         }
     
         # -------- resumo textual para o agente --------

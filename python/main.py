@@ -27,7 +27,8 @@ except ImportError as e:
     sys.exit(1)
 
 EXTENSIONS_PERMITIDAS = ('.py', '.js', '.ts', '.jsx', '.tsx', '.java')
-IGNORED_DIRS = {'node_modules', '.git', 'dist', 'build', '__pycache__', '.venv', 'out', '.idea', '.vscode'}
+IGNORED_DIRS = {'node_modules', '.git', 'dist', 'build', '__pycache__', '.venv', 'out', '.idea', '.vscode',
+                '.next', '.swc'}  # Next.js: pasta de build e cache do compilador
 
 
 def print_error(error_type: str, message: str, details: Optional[str] = None, suggestions: Optional[List[str]] = None):
@@ -48,30 +49,62 @@ def print_error(error_type: str, message: str, details: Optional[str] = None, su
 
 
 def validate_environment():
-    """Validate required environment variables and dependencies"""
-    print("🔍 Validando ambiente...", file=sys.stderr)
+    """Validate Ollama environment (offline mode)"""
+    print("🔍 Validando ambiente Ollama (Modo Offline)...", file=sys.stderr)
 
-    # Check for API keys
-    gemini_key = os.getenv('GEMINI_API_KEY')
-    groq_key = os.getenv('GROQ_API_KEY')
-    openai_key = os.getenv('OPENAI_API_KEY')
+    # Check Ollama configuration
+    ollama_url = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+    ollama_model = os.getenv('OLLAMA_MODEL', 'deepseek-coder:6.7b')
 
-    if not any([gemini_key, groq_key, openai_key]):
+    print(f"   Ollama URL: {ollama_url}", file=sys.stderr)
+    print(f"   Modelo: {ollama_model}", file=sys.stderr)
+
+    # Verify Ollama is running
+    try:
+        import requests
+        response = requests.get(f"{ollama_url}/api/tags", timeout=5)
+        if response.status_code == 200:
+            print(f"✅ Ollama está rodando", file=sys.stderr)
+
+            # Check if required models are available
+            models_data = response.json()
+            available_models = [m['name'] for m in models_data.get('models', [])]
+
+            required_models = ['deepseek-coder:6.7b', 'llama3:8b']
+            missing_models = [m for m in required_models if m not in available_models]
+
+            if missing_models:
+                print_error(
+                    "ConfigurationError",
+                    f"Modelos Ollama ausentes: {', '.join(missing_models)}",
+                    "Os modelos obrigatórios não estão instalados no Ollama",
+                    [
+                        f"Instale os modelos faltantes:",
+                        f"   ollama pull deepseek-coder:6.7b",
+                        f"   ollama pull llama3:8b"
+                    ]
+                )
+                return False
+
+            print(f"✅ Modelos Ollama disponíveis: {', '.join(required_models)}", file=sys.stderr)
+            return True
+        else:
+            raise Exception(f"Status code: {response.status_code}")
+
+    except Exception as e:
         print_error(
-            "ConfigurationError",
-            "Nenhuma chave de API encontrada",
-            "O arquivo .env deve conter pelo menos uma chave de API (GEMINI_API_KEY, GROQ_API_KEY ou OPENAI_API_KEY)",
+            "ConnectionError",
+            "Não foi possível conectar ao Ollama",
+            f"Erro: {str(e)}",
             [
-                "Crie o arquivo .env na raiz do projeto",
-                "Adicione sua chave: GEMINI_API_KEY=sua_chave_aqui",
-                "Ou use Groq (grátis): GROQ_API_KEY=sua_chave_groq",
-                "Veja .env.example para referência"
+                "Verifique se o Ollama está instalado: https://ollama.com/download",
+                "Inicie o Ollama: ollama serve",
+                "Instale os modelos necessários:",
+                "   ollama pull deepseek-coder:6.7b",
+                "   ollama pull llama3:8b"
             ]
         )
         return False
-
-    print(f"✅ Chave de API encontrada", file=sys.stderr)
-    return True
 
 
 def find_package_json_path(search_path: str) -> Optional[str]:
@@ -247,38 +280,27 @@ if __name__ == "__main__":
         except Exception as e:
             error_message = str(e).lower()
 
-            if 'api key' in error_message or 'authentication' in error_message or 'unauthorized' in error_message:
+            if 'connection' in error_message or 'ollama' in error_message:
                 print_error(
-                    "APIKeyError",
-                    "Problema com a chave de API",
+                    "OllamaConnectionError",
+                    "Não foi possível conectar ao Ollama",
                     str(e),
                     [
-                        "Verifique se a chave de API está correta no arquivo .env",
-                        "Teste a chave em: https://aistudio.google.com/app/apikey (Gemini)",
-                        "Ou obtenha uma chave Groq grátis: https://console.groq.com",
-                        "Certifique-se de que a chave não expirou"
+                        "Verifique se o Ollama está rodando: ollama serve",
+                        "Verifique se os modelos estão instalados:",
+                        "   ollama pull deepseek-coder:6.7b",
+                        "   ollama pull llama3:8b"
                     ]
                 )
-            elif 'rate limit' in error_message or 'quota' in error_message:
+            elif 'timeout' in error_message:
                 print_error(
-                    "RateLimitError",
-                    "Limite de requisições excedido",
+                    "TimeoutError",
+                    "Tempo limite excedido ao processar com Ollama",
                     str(e),
                     [
-                        "Aguarde alguns minutos e tente novamente",
-                        "Considere usar outro provedor de LLM (veja .env.example)",
-                        "Verifique seus limites em: https://aistudio.google.com/app/apikey"
-                    ]
-                )
-            elif 'connection' in error_message or 'network' in error_message or 'timeout' in error_message:
-                print_error(
-                    "ConnectionError",
-                    "Erro de conexão com a API",
-                    str(e),
-                    [
-                        "Verifique sua conexão com a internet",
-                        "Tente novamente em alguns instantes",
-                        "Verifique se há firewall bloqueando a conexão"
+                        "O modelo pode estar sobrecarregado, tente novamente",
+                        "Verifique se o Ollama está funcionando: ollama list",
+                        "Reinicie o Ollama: ollama serve"
                     ]
                 )
             else:
