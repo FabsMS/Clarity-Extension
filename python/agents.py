@@ -9,11 +9,6 @@ from llm_config import initialize_llms
 
 load_dotenv()
 
-# Initialize both LLMs with full validation
-llms = initialize_llms()
-analyst_llm = llms["analyst"]
-writer_llm = llms["writer"]
-
 class Create_Crew:
     # Configuração de chunking para controle de contexto
     MAX_FILES_PER_CHUNK = 15  # Máximo de arquivos por chunk
@@ -21,12 +16,15 @@ class Create_Crew:
     MAX_CONTEXT_TOKENS = 8000  # Estimativa de tokens máximos (margem de segurança)
 
     def __init__(self):
+        llms = initialize_llms()
+        self._analyst_llm   = llms["analyst"]
+        self._writer_llm    = llms["writer"]
         self.analyzer_agent = self.create_multi_language_analyzer_agent()
         self.writer_agent   = self.create_readme_writer_agent()
         self.analysis_task  = None
         self.readme_task    = None
         self.crew           = None
-        self.intermediate_analyses = []  # Armazena análises intermediárias
+        self.intermediate_analyses = []
 
     # ============================================
     # MÉTODOS DE CHUNKING E CONTROLE DE CONTEXTO
@@ -114,6 +112,11 @@ class Create_Crew:
               f"{chunk_analysis.get('total_linhas', 0)} linhas, "
               f"{len(chunk_analysis.get('detalhes', chunk_analysis.get('arquivos', [])))} arquivos",
               file=sys.stderr, flush=True)
+
+        chunk_json = json.dumps(chunk_analysis, ensure_ascii=False, indent=2)
+        print(f"\n[DEBUG] JSON GERADO PELO ANALYST (Chunk {chunk_num}/{total_chunks}):", file=sys.stderr, flush=True)
+        print(chunk_json, file=sys.stderr, flush=True)
+        print(f"[DEBUG] Fim do JSON do Analyst (Chunk {chunk_num}) — {len(chunk_json)} caracteres\n", file=sys.stderr, flush=True)
 
         return chunk_analysis
 
@@ -418,8 +421,6 @@ class Create_Crew:
         - Entender a estrutura do projeto
         - Passar informações para o próximo agente
 
-        Nota: A análise real é feita ANTES pelo código Python diretamente,
-        este agente apenas recebe e contextualiza os resultados.
         """
         return Agent(
             role="Analista de Código Multilinguagem",
@@ -429,10 +430,10 @@ class Create_Crew:
                 "Você recebe análises técnicas detalhadas e as compreende completamente. "
                 "Foque em precisão técnica e detalhes arquiteturais."
             ),
-            tools=[],  # Sem ferramentas - análise já foi feita pelo código Python
+            tools=[],  #
             verbose=True,
             allow_delegation=False,
-            llm=analyst_llm  # deepseek-coder:6.7b (temperatura 0.1)
+            llm=self._analyst_llm  # deepseek-coder:6.7b (temperatura 0.1)
         )
 
     def create_readme_writer_agent(self):
@@ -449,10 +450,10 @@ class Create_Crew:
                 "Você transforma dados de análise de código em documentação clara e precisa. "
                 "Você NUNCA inventa informações — usa somente o que está nos dados fornecidos."
             ),
-            tools=[],  # SEM ferramentas — o modelo gera diretamente sem loop ReAct
+            tools=[],  
             verbose=True,
             allow_delegation=False,
-            llm=writer_llm
+            llm=self._writer_llm
         )
 
     # --- normaliza entrada (lista de arquivos, arquivo único ou diretório) ---

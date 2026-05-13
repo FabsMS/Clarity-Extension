@@ -1,15 +1,35 @@
 {
   "name": "fabsms-clarity",
-  "displayName": "Clarity",
-  "description": "Geração automática de documentação de código com Python",
+  "displayName": "ClarityAI",
+  "description": "Geração automática de README com IA local (Ollama) — 100% offline, sem envio de dados.",
   "version": "0.0.1",
+  "publisher": "FabsMS",
+  "license": "MIT",
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FabsMS/Clarity-Extension"
+  },
+  "homepage": "https://github.com/FabsMS/Clarity-Extension#readme",
+  "bugs": {
+    "url": "https://github.com/FabsMS/Clarity-Extension/issues"
+  },
+  "keywords": [
+    "documentation",
+    "readme",
+    "ai",
+    "ollama",
+    "python",
+    "code analysis",
+    "generator",
+    "offline"
+  ],
   "engines": {
-    "vscode": "^1.100.0"
+    "vscode": "^1.85.0"
   },
   "categories": [
-    "Documentation",
-    "Tools",
-    "Programming Languages"
+    "Programming Languages",
+    "Other"
   ],
   "activationEvents": [],
   "main": "./out/extension.js",
@@ -17,7 +37,13 @@
     "commands": [
       {
         "command": "fabsms-clarity.generateDocumentation",
-        "title": "Gerar Documentação com Clarity"
+        "title": "Gerar Documentação com Clarity",
+        "category": "Clarity"
+      },
+      {
+        "command": "fabsms-clarity.setupEnvironment",
+        "title": "Configurar Ambiente Python",
+        "category": "Clarity"
       }
     ]
   },
@@ -30,7 +56,7 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.100.0",
+    "@types/vscode": "^1.85.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
     "@typescript-eslint/eslint-plugin": "^8.31.1",

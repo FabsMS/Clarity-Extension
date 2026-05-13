@@ -1,428 +1,383 @@
 import * as vscode from 'vscode';
-import { spawn } from 'child_process';
+import { spawn, exec } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 
-// Helper function to check if file exists
+// ============================================================
+// UTILITÁRIOS
+// ============================================================
+
 function fileExists(filePath: string): boolean {
-	try {
-		return fs.existsSync(filePath);
-	} catch {
-		return false;
-	}
+	try { return fs.existsSync(filePath); } catch { return false; }
 }
 
-// Helper function to get Python path based on OS
-function getPythonPath(extensionPath: string): string {
-	const isWindows = os.platform() === 'win32';
-
-	if (isWindows) {
-		return path.join(extensionPath, '.venv', 'Scripts', 'python.exe');
-	} else {
-		return path.join(extensionPath, '.venv', 'bin', 'python');
-	}
+function getPythonVenvPath(extensionPath: string): string {
+	return os.platform() === 'win32'
+		? path.join(extensionPath, '.venv', 'Scripts', 'python.exe')
+		: path.join(extensionPath, '.venv', 'bin', 'python');
 }
 
-// Helper function to format error messages
-function formatErrorMessage(title: string, details: string, suggestions: string[]): string {
-	let message = `${title}\n\n${details}`;
+function getPipVenvPath(extensionPath: string): string {
+	return os.platform() === 'win32'
+		? path.join(extensionPath, '.venv', 'Scripts', 'pip.exe')
+		: path.join(extensionPath, '.venv', 'bin', 'pip');
+}
 
-	if (suggestions.length > 0) {
-		message += '\n\nPossíveis soluções:\n';
-		suggestions.forEach((suggestion, index) => {
-			message += `${index + 1}. ${suggestion}\n`;
+function runShellCommand(command: string): Promise<string> {
+	return new Promise((resolve, reject) => {
+		exec(command, { encoding: 'utf8' }, (error, stdout, stderr) => {
+			if (error) { reject(new Error(stderr || error.message)); }
+			else { resolve((stdout || stderr).trim()); }
 		});
-	}
-
-	return message;
+	});
 }
+
+function runProcess(executable: string, args: string[], cwd?: string): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const proc = spawn(executable, args, {
+			cwd,
+			env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+			shell: os.platform() === 'win32'
+		});
+		let stderr = '';
+		proc.stderr?.on('data', (d) => { stderr += d.toString(); });
+		proc.stdout?.on('data', () => {});
+		proc.on('error', reject);
+		proc.on('close', (code) => {
+			if (code === 0) { resolve(); }
+			else { reject(new Error(stderr || `Exit code ${code}`)); }
+		});
+	});
+}
+
+async function findSystemPython(): Promise<string | null> {
+	const candidates = os.platform() === 'win32'
+		? ['py', 'python', 'python3']
+		: ['python3', 'python'];
+
+	for (const cmd of candidates) {
+		try {
+			const output = await runShellCommand(`${cmd} --version`);
+			const match = output.match(/Python (\d+)\.(\d+)/);
+			if (match) {
+				const major = parseInt(match[1]);
+				const minor = parseInt(match[2]);
+				if (major === 3 && minor >= 11) { return cmd; }
+			}
+		} catch { /* não encontrado, tenta próximo */ }
+	}
+	return null;
+}
+
+function formatErrorMessage(title: string, details: string, suggestions: string[]): string {
+	let msg = `${title}\n\n${details}`;
+	if (suggestions.length > 0) {
+		msg += '\n\nPossíveis soluções:\n';
+		suggestions.forEach((s, i) => { msg += `${i + 1}. ${s}\n`; });
+	}
+	return msg;
+}
+
+// ============================================================
+// SETUP DO AMBIENTE PYTHON
+// ============================================================
+
+async function setupPythonEnvironment(context: vscode.ExtensionContext): Promise<boolean> {
+	const choice = await vscode.window.showInformationMessage(
+		'⚙️ Configuração inicial do Clarity\n\nUm ambiente Python será criado com todas as dependências. Isso pode levar alguns minutos.',
+		{ modal: true },
+		'Configurar agora',
+		'Cancelar'
+	);
+	if (choice !== 'Configurar agora') { return false; }
+
+	return await vscode.window.withProgress({
+		location: vscode.ProgressLocation.Notification,
+		title: '⚙️ Clarity: Configurando ambiente Python...',
+		cancellable: false
+	}, async (progress) => {
+		const ext = context.extensionPath;
+
+		try {
+			// Passo 1: Localiza Python 3.11+ no sistema
+			progress.report({ increment: 5, message: 'Procurando Python 3.11+ no sistema...' });
+			const pythonCmd = await findSystemPython();
+			if (!pythonCmd) {
+				vscode.window.showErrorMessage(
+					'❌ Python 3.11+ não encontrado no sistema.\n\n' +
+					'Instale o Python em https://python.org/downloads (versão 3.11 ou superior) e tente novamente.'
+				);
+				return false;
+			}
+
+			// Passo 2: Cria o ambiente virtual
+			progress.report({ increment: 10, message: 'Criando ambiente virtual (.venv)...' });
+			const venvDir = path.join(ext, '.venv');
+			if (!fileExists(venvDir)) {
+				await runProcess(pythonCmd, ['-m', 'venv', venvDir]);
+			}
+
+			// Passo 3: Atualiza pip
+			progress.report({ increment: 10, message: 'Atualizando pip...' });
+			const pip = getPipVenvPath(ext);
+			await runProcess(pip, ['install', '--upgrade', 'pip', '--quiet']);
+
+			// Passo 4: Instala dependências
+			progress.report({ increment: 10, message: 'Instalando dependências (5–10 minutos na primeira vez)...' });
+			const req = path.join(ext, 'requirements.txt');
+			await runProcess(pip, ['install', '-r', req, '--quiet'], ext);
+
+			// Passo 5: Cria .env a partir do exemplo, se ainda não existir
+			progress.report({ increment: 60, message: 'Finalizando...' });
+			const envFile    = path.join(ext, '.env');
+			const envExample = path.join(ext, '.env.example');
+			if (!fileExists(envFile) && fileExists(envExample)) {
+				fs.copyFileSync(envExample, envFile);
+			}
+
+			vscode.window.showInformationMessage(
+				'✅ Ambiente configurado!\n\nAgora instale os modelos Ollama para usar o Clarity.',
+				'Instalar Ollama'
+			).then(sel => {
+				if (sel === 'Instalar Ollama') {
+					vscode.env.openExternal(vscode.Uri.parse('https://ollama.com/download'));
+				}
+			});
+			return true;
+
+		} catch (err) {
+			const error = err as Error;
+			vscode.window.showErrorMessage(
+				formatErrorMessage(
+					'❌ Erro durante configuração',
+					error.message,
+					[
+						'Verifique se o Python 3.11+ está instalado corretamente',
+						'Tente manualmente: python -m venv .venv',
+						'Depois: .venv\\Scripts\\pip install -r requirements.txt'
+					]
+				)
+			);
+			return false;
+		}
+	});
+}
+
+// ============================================================
+// ATIVAÇÃO DA EXTENSÃO
+// ============================================================
 
 export function activate(context: vscode.ExtensionContext) {
-	const disposable = vscode.commands.registerCommand('fabsms-clarity.generateDocumentation', async () => {
-		// ============================================
-		// STEP 1: Validate workspace
-		// ============================================
+
+	// ── Comando: Configurar ambiente ────────────────────────
+	const setupCmd = vscode.commands.registerCommand('fabsms-clarity.setupEnvironment', async () => {
+		await setupPythonEnvironment(context);
+	});
+
+	// ── Comando: Gerar documentação ─────────────────────────
+	const generateCmd = vscode.commands.registerCommand('fabsms-clarity.generateDocumentation', async () => {
+
+		// Valida workspace
 		const workspaceFolders = vscode.workspace.workspaceFolders;
 		if (!workspaceFolders) {
 			vscode.window.showErrorMessage(
-				'❌ Nenhuma pasta aberta no VSCode.\n\n' +
-				'Por favor, abra uma pasta do seu projeto antes de gerar documentação.'
+				'❌ Nenhuma pasta aberta.\n\nAbra a pasta do seu projeto antes de gerar documentação.'
 			);
 			return;
 		}
-		const projectPath = workspaceFolders[0].uri.fsPath;
-
-		// ============================================
-		// STEP 2: Validate Python environment
-		// ============================================
+		const projectPath  = workspaceFolders[0].uri.fsPath;
 		const pythonScript = path.join(context.extensionPath, 'python', 'main.py');
-		const pythonPath = getPythonPath(context.extensionPath);
-		const envPath = path.join(context.extensionPath, '.venv');
-		const envFile = path.join(context.extensionPath, '.env');
+		const pythonPath   = getPythonVenvPath(context.extensionPath);
+		const envFile      = path.join(context.extensionPath, '.env');
 
-		// Check if Python script exists
+		// Valida script Python
 		if (!fileExists(pythonScript)) {
-			const errorMsg = formatErrorMessage(
-				'❌ Script Python não encontrado',
-				`O arquivo main.py não foi encontrado em:\n${pythonScript}`,
-				[
-					'Verifique se a extensão foi instalada corretamente',
-					'Reinstale a extensão',
-					'Entre em contato com o desenvolvedor'
-				]
-			);
-			vscode.window.showErrorMessage(errorMsg);
+			vscode.window.showErrorMessage('❌ Script Python não encontrado. Reinstale a extensão.');
 			return;
 		}
 
-		// Check if Python virtual environment exists
+		// Ambiente não configurado → oferece setup automático
 		if (!fileExists(pythonPath)) {
-			const errorMsg = formatErrorMessage(
-				'❌ Ambiente Python não encontrado',
-				`O ambiente virtual Python não foi encontrado em:\n${envPath}`,
-				[
-					'Execute: python -m venv .venv',
-					'Ative o ambiente: .venv\\Scripts\\activate (Windows) ou source .venv/bin/activate (Linux/Mac)',
-					'Instale as dependências: pip install -r requirements.txt',
-					'Verifique o README.md para instruções detalhadas'
-				]
+			const sel = await vscode.window.showWarningMessage(
+				'⚠️ Ambiente Python não configurado.\n\nO Clarity precisa instalar as dependências antes de usar.',
+				'Configurar agora',
+				'Cancelar'
 			);
-			vscode.window.showErrorMessage(errorMsg);
-			return;
+			if (sel === 'Configurar agora') {
+				const ok = await setupPythonEnvironment(context);
+				if (!ok) { return; }
+			} else { return; }
 		}
 
-		// Check if .env file exists
+		// Arquivo .env ausente → oferece criação
 		if (!fileExists(envFile)) {
-			const choice = await vscode.window.showWarningMessage(
-				'⚠️ Arquivo .env não encontrado!\n\n' +
-				'O arquivo .env contém as configurações do Ollama para funcionamento offline.\n\n' +
-				'Você precisa criar um arquivo .env na raiz da extensão com as configurações do Ollama.',
-				'Abrir Documentação',
+			const sel = await vscode.window.showWarningMessage(
+				'⚠️ Arquivo .env não encontrado.\n\nEle contém as configurações do Ollama.',
 				'Criar .env agora',
 				'Continuar mesmo assim'
 			);
-
-			if (choice === 'Abrir Documentação') {
-				const envExamplePath = path.join(context.extensionPath, '.env.example');
-				if (fileExists(envExamplePath)) {
-					const doc = await vscode.workspace.openTextDocument(envExamplePath);
-					vscode.window.showTextDocument(doc);
-				}
-				return;
-			} else if (choice === 'Criar .env agora') {
-				const envExamplePath = path.join(context.extensionPath, '.env.example');
-				if (fileExists(envExamplePath)) {
-					const content = fs.readFileSync(envExamplePath, 'utf-8');
-					fs.writeFileSync(envFile, content);
+			if (sel === 'Criar .env agora') {
+				const envExample = path.join(context.extensionPath, '.env.example');
+				if (fileExists(envExample)) {
+					fs.copyFileSync(envExample, envFile);
 					const doc = await vscode.workspace.openTextDocument(envFile);
-					vscode.window.showTextDocument(doc);
-					vscode.window.showInformationMessage(
-						'✅ Arquivo .env criado! Verifique as configurações do Ollama e execute o comando novamente.'
-					);
+					await vscode.window.showTextDocument(doc);
+					vscode.window.showInformationMessage('✅ .env criado! Execute o comando novamente após revisar.');
 				}
 				return;
 			}
-			// If "Continue anyway", proceed but will likely fail
 		}
 
-		// ============================================
-		// STEP 3: Execute Python script with progress
-		// ============================================
+		// ── Execução principal ───────────────────────────────
 		await vscode.window.withProgress({
 			location: vscode.ProgressLocation.Notification,
-			title: "🤖 Clarity: Gerando documentação com IA...",
+			title: '🤖 Clarity: Gerando documentação com IA...',
 			cancellable: false
 		}, async (progress) => {
 			return new Promise<void>((resolve, reject) => {
+
 				progress.report({ message: 'Inicializando...' });
-				console.log(`\n${'='.repeat(60)}`);
-				console.log('🚀 CLARITY - AI Documentation Generator');
-				console.log(`${'='.repeat(60)}`);
-				console.log(`📁 Projeto: ${projectPath}`);
-				console.log(`🐍 Python: ${pythonPath}`);
-				console.log(`📜 Script: ${pythonScript}`);
-				console.log(`${'-'.repeat(60)}\n`);
 
 				const startTime = Date.now();
+				const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos
+
 				const pythonProcess = spawn(pythonPath, [pythonScript, projectPath], {
 					env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
 				});
 
+				// Encerra automaticamente se demorar demais
+				const timeoutHandle = setTimeout(() => {
+					pythonProcess.kill();
+					vscode.window.showErrorMessage(
+						'⏱️ Tempo limite excedido (15 min).\n\n' +
+						'Verifique se o Ollama está respondendo: ollama list'
+					);
+					reject(new Error('Timeout'));
+				}, TIMEOUT_MS);
+
+				// Mensagens progressivas para o usuário não achar que travou
+				const progressSteps = [
+					{ delay: 5_000,   msg: 'Analisando arquivos do projeto...' },
+					{ delay: 20_000,  msg: 'Processando código...' },
+					{ delay: 60_000,  msg: 'Gerando documentação (pode levar alguns minutos)...' },
+					{ delay: 180_000, msg: 'Aguardando resposta do modelo de linguagem...' },
+					{ delay: 360_000, msg: 'Ainda processando — projetos grandes demoram mais...' },
+				];
+				const stepTimers = progressSteps.map(({ delay, msg }) =>
+					setTimeout(() => progress.report({ message: msg }), delay)
+				);
+
 				let stdout = '';
 				let stderr = '';
-				let lastProgressUpdate = Date.now();
 
-				pythonProcess.stdout.on('data', (data) => {
-					const chunk = data.toString();
-					stdout += chunk;
-
-					// Update progress every 2 seconds
-					const now = Date.now();
-					if (now - lastProgressUpdate > 2000) {
-						progress.report({ message: 'Analisando código...' });
-						lastProgressUpdate = now;
-					}
-
-					// Log progress indicators
-					if (chunk.includes('Analisando') || chunk.includes('Analyzing')) {
-						console.log(`🔍 ${chunk.trim()}`);
-					}
-				});
-
-				pythonProcess.stderr.on('data', (data) => {
-					const chunk = data.toString();
-					stderr += chunk;
-
-					// Log warnings but don't fail
-					if (chunk.toLowerCase().includes('warning')) {
-						console.warn(`⚠️  ${chunk.trim()}`);
-					} else if (chunk.toLowerCase().includes('error')) {
-						console.error(`❌ ${chunk.trim()}`);
-					}
-				});
+				pythonProcess.stdout.on('data', (data) => { stdout += data.toString(); });
+				pythonProcess.stderr.on('data', (data) => { stderr += data.toString(); });
 
 				pythonProcess.on('error', (err) => {
-					const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-
-					console.error('\n❌ ERRO AO INICIAR PROCESSO PYTHON');
-					console.error(`⏱️  Tempo decorrido: ${elapsedTime}s`);
-					console.error(`📋 Erro: ${err.message}`);
-					console.error(`🔧 Código: ${err.name}`);
-
-					let errorMessage = '❌ Falha ao iniciar o script Python\n\n';
-					let suggestions: string[] = [];
-
-					if (err.message.includes('ENOENT')) {
-						errorMessage += 'O executável Python não foi encontrado.\n';
-						suggestions = [
-							'Verifique se o Python 3.11+ está instalado',
-							'Crie o ambiente virtual: python -m venv .venv',
-							'Ative o ambiente e instale dependências: pip install -r requirements.txt',
-							'Verifique o caminho: ' + pythonPath
-						];
-					} else if (err.message.includes('EACCES')) {
-						errorMessage += 'Sem permissão para executar o Python.\n';
-						suggestions = [
-							'Verifique as permissões do arquivo: ' + pythonPath,
-							'No Linux/Mac, execute: chmod +x ' + pythonPath
-						];
-					} else {
-						errorMessage += `Erro: ${err.message}\n`;
-						suggestions = [
-							'Verifique os logs no Console de Depuração (Ctrl+Shift+Y)',
-							'Reinstale as dependências Python',
-							'Entre em contato com o desenvolvedor'
-						];
-					}
-
-					vscode.window.showErrorMessage(formatErrorMessage(
-						'Erro ao iniciar Python',
-						errorMessage,
-						suggestions
-					));
-
+					clearTimeout(timeoutHandle);
+					stepTimers.forEach(clearTimeout);
+					vscode.window.showErrorMessage(
+						formatErrorMessage('❌ Erro ao iniciar Python', err.message, [
+							'Verifique se o ambiente foi configurado: Clarity: Configurar Ambiente Python',
+							'Caminho esperado: ' + pythonPath
+						])
+					);
 					reject(err);
 				});
 
 				pythonProcess.on('close', (code) => {
-					const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+					clearTimeout(timeoutHandle);
+					stepTimers.forEach(clearTimeout);
 
-					console.log(`\n${'-'.repeat(60)}`);
-					console.log(`⏱️  Tempo total de execução: ${elapsedTime}s`);
-					console.log(`📊 Código de saída: ${code}`);
-					console.log(`${'-'.repeat(60)}\n`);
+					const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+					console.log(`[Clarity] Finalizado em ${elapsed}s — código ${code}`);
 
 					if (code !== 0) {
-						console.error('❌ PROCESSO PYTHON FINALIZOU COM ERRO\n');
-						console.error('📋 STDERR:');
-						console.error(stderr || '(vazio)');
-						console.error('\n📋 STDOUT:');
-						console.error(stdout || '(vazio)');
-
-						let errorMessage = `❌ Erro ao executar script Python (código: ${code})\n\n`;
+						const combined = stdout + stderr;
+						let errorMsg   = '❌ Erro ao gerar documentação.\n\n';
 						let suggestions: string[] = [];
 
-						// Parse common Python errors
-						if (stderr.includes('ModuleNotFoundError')) {
-							const match = stderr.match(/ModuleNotFoundError: No module named '([^']+)'/);
-							const moduleName = match ? match[1] : 'desconhecido';
-
-							errorMessage += `Módulo Python não encontrado: ${moduleName}\n`;
+						if (combined.includes('ModuleNotFoundError')) {
+							const m = combined.match(/No module named '([^']+)'/);
+							errorMsg += `Módulo não encontrado: ${m ? m[1] : 'desconhecido'}`;
 							suggestions = [
-								`Instale o módulo: pip install ${moduleName}`,
-								'Ou instale todas as dependências: pip install -r requirements.txt',
-								'Verifique se o ambiente virtual está ativo'
+								'Execute: Clarity: Configurar Ambiente Python (Ctrl+Shift+P)',
+								'Ou manualmente: .venv/Scripts/pip install -r requirements.txt'
 							];
-						} else if (stderr.includes('ImportError')) {
-							errorMessage += 'Erro ao importar módulos Python.\n';
+						} else if (
+							combined.toLowerCase().includes('ollama') ||
+							combined.includes('ConnectionError') ||
+							combined.includes('11434')
+						) {
+							errorMsg += 'Não foi possível conectar ao Ollama.';
 							suggestions = [
-								'Reinstale as dependências: pip install -r requirements.txt',
-								'Verifique se o ambiente virtual está ativo',
-								'Verifique se há conflitos de versão'
+								'Instale o Ollama: https://ollama.com/download',
+								'Inicie o serviço: ollama serve',
+								'Instale o modelo analista: ollama pull deepseek-coder:6.7b',
+								'Instale o modelo escritor: ollama pull llama3:8b'
 							];
-						} else if (stderr.includes('Ollama') || stderr.includes('ollama') || stderr.includes('connection')) {
-							errorMessage += 'Problema ao conectar com o Ollama.\n';
+						} else if (
+							combined.includes('OllamaModelMissing') ||
+							combined.includes('ausentes')
+						) {
+							errorMsg += 'Modelos Ollama não instalados.';
 							suggestions = [
-								'Verifique se o Ollama está instalado: https://ollama.com/download',
-								'Inicie o Ollama: ollama serve',
-								'Instale os modelos: ollama pull deepseek-coder:6.7b',
-								'Instale os modelos: ollama pull llama3:8b'
-							];
-						} else if (stderr.includes('SyntaxError')) {
-							errorMessage += 'Erro de sintaxe no código Python.\n';
-							suggestions = [
-								'Verifique se o código Python está correto',
-								'Reinstale a extensão',
-								'Reporte o erro no GitHub: https://github.com/FabsMS/fabsms-clarity/issues'
+								'ollama pull deepseek-coder:6.7b',
+								'ollama pull llama3:8b'
 							];
 						} else {
-							errorMessage += 'Erro desconhecido durante a execução.\n';
+							errorMsg += 'Erro inesperado durante execução.';
 							suggestions = [
-								'Veja os detalhes completos no Console de Depuração (Ctrl+Shift+Y)',
-								'Verifique o arquivo .env',
-								'Reinstale as dependências Python'
+								'Abra o Console de Depuração (Ctrl+Shift+Y) para ver os detalhes',
+								'Verifique se o Ollama está ativo: ollama list'
 							];
 						}
 
-						// Show first 500 chars of error
-						if (stderr.length > 0) {
-							const errorPreview = stderr.substring(0, 500);
-							console.error('\n📋 Prévia do erro:');
-							console.error(errorPreview);
-						}
-
-						vscode.window.showErrorMessage(formatErrorMessage(
-							'Erro na execução Python',
-							errorMessage,
-							suggestions
-						));
-
-						return reject(new Error(`Python exited with code ${code}`));
+						vscode.window.showErrorMessage(formatErrorMessage('Clarity', errorMsg, suggestions));
+						return reject(new Error(`Python exit ${code}`));
 					}
 
-					// ============================================
-					// STEP 4: Parse Python output
-					// ============================================
+					// Extrai o JSON de sucesso do stdout (busca do fim para o início)
 					try {
-						progress.report({ message: 'Processando resultado...' });
-
-						console.log('📋 STDOUT completo:');
-						console.log(stdout);
-
-						// Try to find the last valid JSON in output
-						// Look for JSON that starts with { and has "success" or "error" key
-						let result = null;
+						let result: Record<string, unknown> | null = null;
 						const lines = stdout.split('\n');
-
-						// Try to find complete JSON from end to start
 						for (let i = lines.length - 1; i >= 0; i--) {
 							const line = lines[i].trim();
-							if (line.startsWith('{') && (line.includes('"success"') || line.includes('"error"'))) {
-								try {
-									result = JSON.parse(line);
-									console.log(`\n✅ JSON válido encontrado na linha ${i + 1}`);
-									break;
-								} catch {
-									// Try to accumulate multiple lines if JSON spans multiple lines
-									let jsonStr = line;
-									for (let j = i + 1; j < lines.length; j++) {
-										jsonStr += lines[j];
-										try {
-											result = JSON.parse(jsonStr);
-											console.log(`\n✅ JSON válido encontrado (linhas ${i + 1}-${j + 1})`);
-											break;
-										} catch {
-											// Continue accumulating
-										}
-									}
-									if (result) break;
-								}
+							if (line.startsWith('{') && line.includes('"success"')) {
+								try { result = JSON.parse(line); break; } catch { /* continua */ }
 							}
 						}
 
 						if (!result) {
-							throw new Error(
-								'Nenhum JSON válido encontrado na saída do script Python.\n\n' +
-								'A saída do script pode estar incompleta ou corrompida.\n' +
-								'Verifique o Console de Depuração para mais detalhes.'
-							);
+							throw new Error('JSON de resposta não encontrado na saída do Python.');
 						}
 
-						console.log('📊 Resultado parseado:');
-						console.log(JSON.stringify(result, null, 2));
-
-						// ============================================
-						// STEP 5: Handle result
-						// ============================================
-						if (result.error) {
-							console.error(`\n❌ Erro retornado pelo Python: ${result.error}`);
-
-							vscode.window.showErrorMessage(
-								`❌ ${result.error}\n\n` +
-								'Verifique o Console de Depuração para mais detalhes.'
-							);
-
-							reject(new Error(result.error));
-						} else if (result.success) {
-							console.log(`\n✅ README gerado com sucesso!`);
-							console.log(`📄 Caminho: ${result.readme_path}`);
-
+						if (result.success) {
 							vscode.window.showInformationMessage(
-								`✅ ${result.message}`,
+								`✅ README gerado em ${elapsed}s!`,
 								'Abrir README',
 								'Copiar caminho'
-							).then(async (selection) => {
-								if (selection === 'Abrir README') {
-									try {
-										const readmeUri = vscode.Uri.file(result.readme_path);
-										const doc = await vscode.workspace.openTextDocument(readmeUri);
-										await vscode.window.showTextDocument(doc);
-										console.log('📖 README aberto no editor');
-									} catch (err) {
-										const error = err as Error;
-										vscode.window.showErrorMessage(
-											`❌ Erro ao abrir README: ${error.message}\n\n` +
-											`Caminho: ${result.readme_path}`
-										);
-									}
-								} else if (selection === 'Copiar caminho') {
-									vscode.env.clipboard.writeText(result.readme_path);
+							).then(async (sel) => {
+								if (sel === 'Abrir README') {
+									const doc = await vscode.workspace.openTextDocument(
+										vscode.Uri.file(result!.readme_path as string)
+									);
+									vscode.window.showTextDocument(doc);
+								} else if (sel === 'Copiar caminho') {
+									vscode.env.clipboard.writeText(result!.readme_path as string);
 									vscode.window.showInformationMessage('📋 Caminho copiado!');
 								}
 							});
-
 							resolve();
 						} else {
-							throw new Error('Resposta inválida do script Python (nem success nem error)');
+							throw new Error((result.error as string) || 'Resposta inválida do Python.');
 						}
 
 					} catch (e) {
-						console.error('\n❌ ERRO AO PROCESSAR SAÍDA DO PYTHON');
-						console.error('Tipo de erro:', e instanceof Error ? e.constructor.name : typeof e);
-						console.error('Mensagem:', e instanceof Error ? e.message : String(e));
-						console.error('\n📋 STDOUT recebido:');
-						console.error(stdout || '(vazio)');
-
-						let errorMessage = '❌ Falha ao processar a resposta do script Python\n\n';
-
-						if (e instanceof SyntaxError) {
-							errorMessage += 'A saída do script não é um JSON válido.\n';
-						} else {
-							errorMessage += `Erro: ${e instanceof Error ? e.message : String(e)}\n`;
-						}
-
-						vscode.window.showErrorMessage(formatErrorMessage(
-							'Erro ao processar resultado',
-							errorMessage,
-							[
-								'Verifique o Console de Depuração (Ctrl+Shift+Y) para ver a saída completa',
-								'O script Python pode não ter executado corretamente',
-								'Verifique se há erros no arquivo .env',
-								'Tente executar novamente'
-							]
-						));
-
+						vscode.window.showErrorMessage(
+							`❌ Erro ao processar resposta: ${e instanceof Error ? e.message : String(e)}`
+						);
 						reject(e);
 					}
 				});
@@ -430,5 +385,21 @@ export function activate(context: vscode.ExtensionContext) {
 		});
 	});
 
-	context.subscriptions.push(disposable);
+	context.subscriptions.push(setupCmd, generateCmd);
+
+	// Avisa na primeira ativação se o ambiente não estiver configurado
+	const pythonPath = getPythonVenvPath(context.extensionPath);
+	if (!fileExists(pythonPath)) {
+		vscode.window.showInformationMessage(
+			'👋 Bem-vindo ao Clarity! Configure o ambiente Python para começar.',
+			'Configurar agora',
+			'Depois'
+		).then(sel => {
+			if (sel === 'Configurar agora') {
+				vscode.commands.executeCommand('fabsms-clarity.setupEnvironment');
+			}
+		});
+	}
 }
+
+export function deactivate() {}

@@ -146,12 +146,9 @@ def get_all_relevant_files(project_path: str) -> List[str]:
         for file in files:
             total_files_scanned += 1
             if file.endswith(EXTENSIONS_PERMITIDAS):
-                if not file.startswith('test'):
-                    file_path = os.path.join(root, file)
-                    arquivos.append(file_path)
-                    print(f"   ✓ {file_path}", file=sys.stderr)
-                else:
-                    print(f"   ⊗ Ignorado (test): {os.path.join(root, file)}", file=sys.stderr)
+                file_path = os.path.join(root, file)
+                arquivos.append(file_path)
+                print(f"   ✓ {file_path}", file=sys.stderr)
 
     print(f"\n📊 Estatísticas:", file=sys.stderr)
     print(f"   Total de pastas escaneadas: {dirs_scanned}", file=sys.stderr)
@@ -394,7 +391,7 @@ if __name__ == "__main__":
             [
                 "Veja os logs acima para detalhes completos",
                 "Verifique se todas as dependências estão instaladas",
-                "Reporte o erro em: https://github.com/FabsMS/fabsms-clarity/issues",
+                "Reporte o erro em: https://github.com/FabsMS/Clarity-Extension/issues",
                 f"Stack trace completo impresso no stderr"
             ]
         )

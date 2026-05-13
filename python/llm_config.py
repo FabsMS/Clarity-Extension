@@ -110,7 +110,7 @@ def check_ollama_availability() -> Dict[str, any]:
             "Soluções:\n"
             "  1. Reinstale o Ollama: https://ollama.com/download\n"
             "  2. Verifique logs do Ollama\n"
-            "  3. Reporte o erro: https://github.com/FabsMS/fabsms-clarity/issues\n"
+            "  3. Reporte o erro: https://github.com/FabsMS/Clarity-Extension/issues\n"
         )
 
 
