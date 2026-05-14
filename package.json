@@ -2,7 +2,7 @@
   "name": "fabsms-clarity",
   "displayName": "ClarityAI",
   "description": "Geração automática de README com IA local (Ollama) — 100% offline, sem envio de dados.",
-  "version": "0.0.1",
+  "version": "0.0.6",
   "publisher": "FabsMS",
   "license": "MIT",
   "icon": "images/icon.png",

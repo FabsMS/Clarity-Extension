@@ -18,11 +18,6 @@ function getPythonVenvPath(extensionPath: string): string {
 		: path.join(extensionPath, '.venv', 'bin', 'python');
 }
 
-function getPipVenvPath(extensionPath: string): string {
-	return os.platform() === 'win32'
-		? path.join(extensionPath, '.venv', 'Scripts', 'pip.exe')
-		: path.join(extensionPath, '.venv', 'bin', 'pip');
-}
 
 function runShellCommand(command: string): Promise<string> {
 	return new Promise((resolve, reject) => {
@@ -51,11 +46,13 @@ function runProcess(executable: string, args: string[], cwd?: string): Promise<v
 	});
 }
 
-async function findSystemPython(): Promise<string | null> {
+async function findSystemPython(): Promise<{ cmd: string | null; tooNew: boolean }> {
+	// Tenta versões específicas antes das genéricas (útil quando 3.14 é o padrão)
 	const candidates = os.platform() === 'win32'
-		? ['py', 'python', 'python3']
-		: ['python3', 'python'];
+		? ['py -3.13', 'py -3.12', 'py -3.11', 'py', 'python', 'python3']
+		: ['python3.13', 'python3.12', 'python3.11', 'python3', 'python'];
 
+	let tooNew = false;
 	for (const cmd of candidates) {
 		try {
 			const output = await runShellCommand(`${cmd} --version`);
@@ -63,11 +60,12 @@ async function findSystemPython(): Promise<string | null> {
 			if (match) {
 				const major = parseInt(match[1]);
 				const minor = parseInt(match[2]);
-				if (major === 3 && minor >= 11) { return cmd; }
+				if (major === 3 && minor >= 11 && minor <= 13) { return { cmd, tooNew: false }; }
+				if (major === 3 && minor >= 14) { tooNew = true; }
 			}
 		} catch { /* não encontrado, tenta próximo */ }
 	}
-	return null;
+	return { cmd: null, tooNew };
 }
 
 function formatErrorMessage(title: string, details: string, suggestions: string[]): string {
@@ -100,14 +98,18 @@ async function setupPythonEnvironment(context: vscode.ExtensionContext): Promise
 		const ext = context.extensionPath;
 
 		try {
-			// Passo 1: Localiza Python 3.11+ no sistema
-			progress.report({ increment: 5, message: 'Procurando Python 3.11+ no sistema...' });
-			const pythonCmd = await findSystemPython();
+			// Passo 1: Localiza Python 3.11–3.13 no sistema
+			progress.report({ increment: 5, message: 'Procurando Python 3.11–3.13 no sistema...' });
+			const { cmd: pythonCmd, tooNew } = await findSystemPython();
 			if (!pythonCmd) {
-				vscode.window.showErrorMessage(
-					'❌ Python 3.11+ não encontrado no sistema.\n\n' +
-					'Instale o Python em https://python.org/downloads (versão 3.11 ou superior) e tente novamente.'
-				);
+				const msg = tooNew
+					? '❌ Python 3.14+ não é suportado pelas dependências do Clarity.\n\nInstale o Python 3.12 ou 3.13 em https://python.org/downloads e tente novamente.'
+					: '❌ Python 3.11, 3.12 ou 3.13 não encontrado no sistema.\n\nInstale o Python 3.12 em https://python.org/downloads e tente novamente.';
+				vscode.window.showErrorMessage(msg, 'Baixar Python').then(sel => {
+					if (sel === 'Baixar Python') {
+						vscode.env.openExternal(vscode.Uri.parse('https://www.python.org/downloads/'));
+					}
+				});
 				return false;
 			}
 
@@ -118,15 +120,19 @@ async function setupPythonEnvironment(context: vscode.ExtensionContext): Promise
 				await runProcess(pythonCmd, ['-m', 'venv', venvDir]);
 			}
 
-			// Passo 3: Atualiza pip
+			// Passo 3: Atualiza pip via "python -m pip" (necessário no Windows)
 			progress.report({ increment: 10, message: 'Atualizando pip...' });
-			const pip = getPipVenvPath(ext);
-			await runProcess(pip, ['install', '--upgrade', 'pip', '--quiet']);
+			const pythonExe = getPythonVenvPath(ext);
+			try {
+				await runProcess(pythonExe, ['-m', 'pip', 'install', '--upgrade', 'pip', '--quiet']);
+			} catch {
+				// Falha no upgrade do pip não é fatal — continua com a versão atual
+			}
 
-			// Passo 4: Instala dependências
+			// Passo 4: Instala dependências via "python -m pip" (evita bug do pip.exe no Windows)
 			progress.report({ increment: 10, message: 'Instalando dependências (5–10 minutos na primeira vez)...' });
 			const req = path.join(ext, 'requirements.txt');
-			await runProcess(pip, ['install', '-r', req, '--quiet'], ext);
+			await runProcess(pythonExe, ['-m', 'pip', 'install', '-r', req, '--quiet'], ext);
 
 			// Passo 5: Cria .env a partir do exemplo, se ainda não existir
 			progress.report({ increment: 60, message: 'Finalizando...' });
@@ -306,18 +312,6 @@ export function activate(context: vscode.ExtensionContext) {
 								'Ou manualmente: .venv/Scripts/pip install -r requirements.txt'
 							];
 						} else if (
-							combined.toLowerCase().includes('ollama') ||
-							combined.includes('ConnectionError') ||
-							combined.includes('11434')
-						) {
-							errorMsg += 'Não foi possível conectar ao Ollama.';
-							suggestions = [
-								'Instale o Ollama: https://ollama.com/download',
-								'Inicie o serviço: ollama serve',
-								'Instale o modelo analista: ollama pull deepseek-coder:6.7b',
-								'Instale o modelo escritor: ollama pull llama3:8b'
-							];
-						} else if (
 							combined.includes('OllamaModelMissing') ||
 							combined.includes('ausentes')
 						) {
@@ -326,6 +320,21 @@ export function activate(context: vscode.ExtensionContext) {
 								'ollama pull deepseek-coder:6.7b',
 								'ollama pull llama3:8b'
 							];
+						} else if (
+							combined.toLowerCase().includes('ollama') ||
+							combined.includes('ConnectionError') ||
+							combined.includes('11434')
+						) {
+							vscode.window.showErrorMessage(
+								'❌ Clarity: Não foi possível conectar ao Ollama.\n\nVerifique se está instalado e em execução.',
+								'Instalar Ollama',
+								'Iniciar: ollama serve'
+							).then(sel => {
+								if (sel === 'Instalar Ollama') {
+									vscode.env.openExternal(vscode.Uri.parse('https://ollama.com/download'));
+								}
+							});
+							return reject(new Error('Ollama não disponível'));
 						} else {
 							errorMsg += 'Erro inesperado durante execução.';
 							suggestions = [

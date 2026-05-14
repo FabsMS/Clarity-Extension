@@ -164,7 +164,8 @@ class Create_Crew:
             'frameworks_detectados': set(),
             'padroes_arquiteturais': set(),
             'imports_principais': defaultdict(set),
-            'arquivos_chave': []
+            'arquivos_chave': [],
+            'nomes_simbolos': {'componentes': set(), 'classes': set(), 'rotas': set()},
         }
 
         # Consolida dados de cada chunk
@@ -235,6 +236,13 @@ class Create_Crew:
                 if isinstance(chave, list):
                     consolidated['arquivos_chave'].extend(chave)
 
+            # Símbolos semânticos
+            if 'nomes_simbolos' in analysis:
+                _sim = analysis['nomes_simbolos']
+                consolidated['nomes_simbolos']['componentes'].update(_sim.get('componentes', []))
+                consolidated['nomes_simbolos']['classes'].update(_sim.get('classes', []))
+                consolidated['nomes_simbolos']['rotas'].update(_sim.get('rotas', []))
+
         # Converte sets/defaultdicts para listas/dicts para JSON
         consolidated['linguagens'] = sorted(list(consolidated['linguagens']))
         consolidated['dependencias'] = sorted(list(consolidated['dependencias']))
@@ -246,6 +254,9 @@ class Create_Crew:
             for lang, imps in consolidated['imports_principais'].items()
         }
         consolidated['arquivos_chave'] = list(set(consolidated['arquivos_chave']))[:10]  # Deduplica e limita
+        consolidated['nomes_simbolos'] = {
+            k: sorted(list(v))[:25] for k, v in consolidated['nomes_simbolos'].items()
+        }
 
         print(f"[CONSOLIDATION] Análise consolidada: "
               f"{consolidated['total_arquivos']} arquivos, "
@@ -313,7 +324,8 @@ class Create_Crew:
                 'estrutura_pastas': consolidated_analysis.get('estrutura_pastas', {}),
                 'arquivos_chave': consolidated_analysis.get('arquivos_chave', [])[:10]
             },
-            'detalhes_arquivos': detalhes_arquivos[:15]
+            'detalhes_arquivos': detalhes_arquivos[:15],
+            'nomes_simbolos': consolidated_analysis.get('nomes_simbolos', {}),
         }
 
         # Pre-build ASCII directory tree — incluído no prompt como bloco literal
@@ -631,6 +643,12 @@ class Create_Crew:
         # Pastas do projeto
         _pastas = list(data.get('arquitetura', {}).get('estrutura_pastas', {}).keys())
 
+        # ── Símbolos semânticos extraídos do código ──────────────────────────
+        _simbolos    = data.get('nomes_simbolos', {})
+        _componentes = _simbolos.get('componentes', [])
+        _classes     = _simbolos.get('classes', [])
+        _rotas       = _simbolos.get('rotas', [])
+
         # ── Resumo rico para orientar o modelo nas partes criativas ──────────
         resumo = (
             f"Nome: {nome}\n"
@@ -638,14 +656,20 @@ class Create_Crew:
             f"Frameworks: {', '.join(frameworks) if frameworks else 'nenhum'}\n"
             f"Dependências: {', '.join(deps[:10]) if deps else 'nenhuma'}\n"
         )
+        if desc_orig:
+            resumo += f"Descrição original: {desc_orig}\n"
         if _stems:
             resumo += f"Arquivos do projeto: {', '.join(_stems[:35])}\n"
+        if _componentes:
+            resumo += f"Componentes/Funções exportadas: {', '.join(_componentes[:20])}\n"
+        if _classes:
+            resumo += f"Classes: {', '.join(_classes[:15])}\n"
+        if _rotas:
+            resumo += f"Rotas detectadas: {', '.join(_rotas[:15])}\n"
         if _ext_imports:
             resumo += f"Imports externos: {', '.join(sorted(_ext_imports)[:15])}\n"
         if _pastas:
             resumo += f"Pastas: {', '.join(_pastas)}\n"
-        if desc_orig:
-            resumo += f"Descrição original: {desc_orig}\n"
 
         # ── Template pré-preenchido (modelo só toca nos campos [...]) ─────────
         template = (
@@ -748,25 +772,35 @@ class Create_Crew:
                 "Mantenha todo o resto EXATAMENTE como está — não altere nomes, URLs, badges, âncoras nem blocos de código.\n\n"
                 "DADOS DO PROJETO (use para orientar o texto criativo):\n"
                 + resumo + "\n"
+                "HIERARQUIA DE CONFIANÇA — siga esta ordem ao inferir o domínio do projeto:\n"
+                "  1. 'Descrição original' (quando presente): o próprio autor descreveu o projeto. Use como base factual e expanda só com o que os outros sinais confirmam.\n"
+                "  2. 'Rotas detectadas': as rotas da API/app mostram a estrutura funcional real (ex.: GET /perguntas → o sistema gerencia perguntas).\n"
+                "  3. 'Componentes/Funções exportadas' e 'Classes': entidades nomeadas no código revelam os conceitos do domínio.\n"
+                "  4. 'Arquivos do projeto': nomes de arquivos confirmam módulos existentes.\n"
+                "  5. 'Imports externos': bibliotecas confirmam tecnologias e área de domínio.\n"
+                "  6. Nome do repositório: use APENAS para contextualizar. NUNCA invente domínio baseado só no nome.\n"
+                "  Regra geral: quanto mais fontes confirmam uma informação, mais seguro é usá-la. Se só o nome do repositório sugere algo, omita.\n\n"
                 "CAMPOS A PREENCHER:\n"
-                "- [TAGLINE]: frase curta e específica sobre ESTE projeto (máx. 15 palavras). Use o nome e os arquivos para inferir o domínio.\n"
+                "- [TAGLINE]: frase curta e específica sobre ESTE projeto (máx. 15 palavras). "
+                "Se 'Descrição original' existir, derive a tagline dela. Senão, use os arquivos.\n"
                 "- [DESCRICAO]: Escreva 3 parágrafos LONGOS e ESPECÍFICOS — cada um com pelo menos 3-4 frases completas:\n"
                 "  Parágrafo 1 — Propósito: O que é o projeto e qual problema real ele resolve. "
-                "Deduza pelo nome: 'admin-xxx' → painel de gestão; 'ecommerce' → loja virtual; 'transitolandia' → sistema de trânsito. "
-                "Cite o nome do projeto e o contexto de negócio. Mínimo 3 frases.\n"
+                "Se 'Descrição original' existir, expanda-a com detalhes confirmados pelos arquivos. "
+                "Se não existir, infira o domínio pelos nomes dos arquivos. "
+                "Não mencione domínios ou contextos de negócio que os arquivos não confirmem. Mínimo 3 frases.\n"
                 "  Parágrafo 2 — Módulos e funcionalidades: Descreva de forma narrativa o que o sistema faz, "
-                "baseando-se nos nomes dos arquivos fornecidos (Login, Dashboard, Relatorio, Cart, Pagamento, etc.). "
-                "Cite os módulos específicos que você encontrou. Mínimo 4 frases.\n"
+                "citando APENAS os módulos cujos nomes aparecem em 'Arquivos do projeto'. "
+                "Não mencione módulos que não estejam na lista. Mínimo 4 frases.\n"
                 "  Parágrafo 3 — Tecnologia e público-alvo: Para quem foi desenvolvido e como as tecnologias escolhidas "
                 "beneficiam o usuário (performance, usabilidade, manutenibilidade). Mínimo 2 frases.\n"
-                "  PROIBIDO usar: 'aplicação rápida e escalável', 'visa criar', 'resolve o problema de desenvolver', "
+                "  PROIBIDO: 'aplicação rápida e escalável', 'visa criar', 'resolve o problema de desenvolver', "
                 "'facilidade e eficiência', qualquer frase genérica que sirva para qualquer projeto.\n"
-                "- [FUNCIONALIDADES]: 5 a 7 funcionalidades ESPECÍFICAS e CONCRETAS deduzidas dos arquivos. "
-                "Cada item deve descrever uma feature real do sistema, não uma tecnologia: "
-                "ex. Login.tsx → '✅ Sistema de autenticação e controle de acesso'; "
-                "Dashboard.tsx → '✅ Painel de controle com visão geral do sistema'; "
-                "Relatorio.tsx → '✅ Geração e visualização de relatórios'; "
-                "Cart.tsx → '✅ Carrinho de compras com persistência'. "
+                "- [FUNCIONALIDADES]: 5 a 7 funcionalidades ESPECÍFICAS e CONCRETAS. "
+                "REGRA ABSOLUTA: liste APENAS funcionalidades cujos arquivos correspondentes aparecem em 'Arquivos do projeto'. "
+                "Não inclua funcionalidade que não tenha arquivo correspondente. "
+                "Se o projeto tiver poucos arquivos não-genéricos, liste menos itens — é melhor ter 3 corretos do que 7 inventados. "
+                "Exemplo de FORMATO (não de conteúdo): 'Pergunta' nos arquivos → '✅ Cadastro e edição de perguntas'; "
+                "'Produto' nos arquivos → '✅ Gestão de catálogo de produtos'. "
                 "Formato: `- ✅ Descrição concreta da funcionalidade`\n"
                 "- [DESCRICAO_PASTAS]: uma linha por pasta da árvore explicando sua finalidade\n"
                 "- Nos Frameworks e Ferramentas: substitua `[escreva uma linha sobre o papel deste framework]` pela descrição real\n\n"

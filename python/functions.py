@@ -538,6 +538,11 @@ class MultiLanguageCodeAnalyzer(BaseTool):
         total_funcoes = 0
         total_classes = 0
 
+        # Símbolos semânticos extraídos do código
+        nomes_componentes: list[str] = []   # exports PascalCase (React/Vue components)
+        nomes_classes_globais: list[str] = []  # class names (todos os arquivos)
+        rotas_detectadas: list[str] = []    # rotas Express, React Router, Next.js, FastAPI/Flask
+
         # Metadados do projeto
         projeto_nome = None
         projeto_descricao = None
@@ -698,6 +703,65 @@ class MultiLanguageCodeAnalyzer(BaseTool):
                     funcoes += len(re.findall(r'\b\w+\s*:\s*(?:\([^)]*\)|[^,])\s*=>', conteudo))
                     classes += len(re.findall(r'\bclass\s+\w+', conteudo))
 
+                    # ── Extração semântica JS/TS ──────────────────────────────
+                    _COMP_GEN = {
+                        'App', 'Root', 'Provider', 'Component', 'Page', 'Layout',
+                        'Router', 'Switch', 'Fragment', 'Context', 'Store', 'Wrapper',
+                        'Container', 'Main', 'Index',
+                    }
+                    # Componentes/funções exportadas (PascalCase = React/Vue component)
+                    for _m in re.finditer(
+                        r'export\s+(?:default\s+)?(?:function|const|class)\s+([A-Z][A-Za-z0-9]{2,})',
+                        conteudo
+                    ):
+                        _nome = _m.group(1)
+                        if _nome not in _COMP_GEN and _nome not in nomes_componentes:
+                            nomes_componentes.append(_nome)
+
+                    # Classes (todas — incluindo internas)
+                    for _m in re.finditer(r'\bclass\s+([A-Z][A-Za-z0-9]+)', conteudo):
+                        _nome = _m.group(1)
+                        if _nome not in nomes_classes_globais:
+                            nomes_classes_globais.append(_nome)
+
+                    # Rotas Express / Fastify
+                    for _m in re.finditer(
+                        r'(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*["\'\`]([^"\'`\s]{1,80})["\'\`]',
+                        conteudo
+                    ):
+                        _rota = f"{_m.group(1).upper()} {_m.group(2)}"
+                        if _rota not in rotas_detectadas:
+                            rotas_detectadas.append(_rota)
+
+                    # Rotas React Router (<Route path="...">)
+                    for _m in re.finditer(r'<Route[^>]+path=["\'\`]([^"\'`]{1,80})["\'\`]', conteudo):
+                        _rota = _m.group(1)
+                        if _rota not in rotas_detectadas:
+                            rotas_detectadas.append(_rota)
+
+                    # Rotas Next.js inferidas do caminho do arquivo (pages/ ou app/)
+                    _fp_norm = file_path.replace('\\', '/')
+                    _NEXT_GEN = {
+                        'index', '_app', '_document', 'layout', 'error',
+                        'not-found', 'loading', '_error', 'page', 'template',
+                    }
+                    for _pasta_raiz in ('pages', 'app'):
+                        if f'/{_pasta_raiz}/' in _fp_norm:
+                            _p = Path(file_path)
+                            _parts = _p.parts
+                            _pidx = next(
+                                (i for i, x in enumerate(_parts) if x == _pasta_raiz), None
+                            )
+                            if _pidx is not None:
+                                _stem = _p.stem
+                                if _stem.lower() not in _NEXT_GEN and not _stem.startswith('['):
+                                    _seg = list(_parts[_pidx + 1:-1]) + (
+                                        [_stem] if _stem.lower() != 'index' else []
+                                    )
+                                    _rota = '/' + '/'.join(_seg)
+                                    if _rota not in rotas_detectadas:
+                                        rotas_detectadas.append(_rota)
+
                 elif ext == '.py':
                     # Python
                     # Detectar imports
@@ -721,6 +785,22 @@ class MultiLanguageCodeAnalyzer(BaseTool):
                     # Contar funções e classes
                     funcoes += len(re.findall(r'^\s*def\s+\w+', conteudo, re.MULTILINE))
                     classes += len(re.findall(r'^\s*class\s+\w+', conteudo, re.MULTILINE))
+
+                    # ── Extração semântica Python ─────────────────────────────
+                    # Classes (PascalCase)
+                    for _m in re.finditer(r'^\s*class\s+([A-Z][A-Za-z0-9]+)', conteudo, re.MULTILINE):
+                        _nome = _m.group(1)
+                        if _nome not in nomes_classes_globais:
+                            nomes_classes_globais.append(_nome)
+
+                    # Rotas FastAPI / Flask (decoradores @app.get, @router.post, etc.)
+                    for _m in re.finditer(
+                        r'@[\w.]+\.(get|post|put|delete|patch)\s*\(\s*["\']([^"\']{1,80})["\']',
+                        conteudo
+                    ):
+                        _rota = f"{_m.group(1).upper()} {_m.group(2)}"
+                        if _rota not in rotas_detectadas:
+                            rotas_detectadas.append(_rota)
 
                 total_funcoes += funcoes
                 total_classes += classes
@@ -779,6 +859,11 @@ class MultiLanguageCodeAnalyzer(BaseTool):
             "imports_principais": {
                 lang: sorted(list(imps))[:15]  # Top 15 imports por linguagem
                 for lang, imps in imports_detectados.items()
+            },
+            "nomes_simbolos": {
+                "componentes": nomes_componentes[:25],
+                "classes": nomes_classes_globais[:20],
+                "rotas": rotas_detectadas[:20],
             },
             "resumo": ". ".join(resumo_parts) + "."
         }

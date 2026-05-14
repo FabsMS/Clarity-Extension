@@ -1,6 +1,6 @@
 # 🤖 Clarity - AI-Powered Documentation Generator
 
-![Version](https://img.shields.io/badge/version-0.0.1-blue.svg)
+![Version](https://img.shields.io/badge/version-0.0.5-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Node](https://img.shields.io/badge/node-20.x-green.svg)
@@ -89,9 +89,9 @@ O Clarity implementa um **fluxo inteligente com chunking** para lidar com projet
 
 ## 📊 Status do Projeto
 
-**Versão:** 0.0.1 (Beta)
+**Versão:** 0.0.5 (Beta)
 **Status:** 🟢 Em desenvolvimento ativo
-**Última atualização:** Janeiro 2026
+**Última atualização:** Maio 2026
 
 ---
 

@@ -69,7 +69,6 @@ def test_imports():
         ('langchain', 'LangChain'),
         ('dotenv', 'python-dotenv'),
         ('bs4', 'BeautifulSoup4'),
-        ('chromadb', 'ChromaDB'),
         ('ollama', 'Ollama'),
     ]
 
